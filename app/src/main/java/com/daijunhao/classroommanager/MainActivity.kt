@@ -15,6 +15,10 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.School
+import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -31,9 +35,15 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.daijunhao.classroommanager.ui.theme.ClassroomManagerTheme
 import com.daijunhao.classroommanager.ui.LoginScreen
+import com.daijunhao.classroommanager.ui.CheckInDetailScreen
+import com.daijunhao.classroommanager.ui.TaskSetDetailScreen
+import com.daijunhao.classroommanager.ui.AnswerSheetScreen
 import com.daijunhao.classroommanager.data.TokenStore
 import com.daijunhao.classroommanager.data.ClassApi
 import com.daijunhao.classroommanager.data.ClassInfo
+import com.daijunhao.classroommanager.data.AccountProfile
+import com.daijunhao.classroommanager.data.AppSettings
+import com.daijunhao.classroommanager.data.DebugOptions
 import coil.compose.AsyncImage
 import com.daijunhao.classroommanager.data.MemberInfo
 import androidx.compose.foundation.shape.CircleShape
@@ -44,7 +54,6 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
-import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.text.style.TextOverflow
 import com.daijunhao.classroommanager.data.HomeApi
@@ -76,6 +85,11 @@ sealed class Screen(val route: String, val title: String, val icon: ImageVector)
 }
 
 val bottomNavItems = listOf(Screen.Home, Screen.ClassList, Screen.Mine)
+
+private data class HomeDisplayGroup(
+    val key: String,
+    val items: List<HomeItem>
+)
 
 // ---------------- 2. 主页面 ----------------
 @OptIn(ExperimentalMaterial3Api::class)
@@ -155,8 +169,14 @@ fun AppNavHost(navController: NavHostController, startLoggedIn: Boolean, modifie
             slideOutHorizontally(targetOffsetX = { it }, animationSpec = tween(300)) + fadeOut(tween(300))
         }
     ) {
-        composable(Screen.Home.route) {
-            HomeScreen(navController = navController)
+        composable(Screen.Home.route) { backStackEntry ->
+            val refreshVersion by backStackEntry.savedStateHandle
+                .getStateFlow("home_refresh_version", 0)
+                .collectAsState()
+            HomeScreen(
+                navController = navController,
+                refreshVersion = refreshVersion
+            )
         }
         composable(Screen.ClassList.route) {
             ClassScreen(onClassClick = { cid -> navController.navigate("class_detail/$cid") })
@@ -185,12 +205,82 @@ fun AppNavHost(navController: NavHostController, startLoggedIn: Boolean, modifie
             val scoreId = backStackEntry.arguments?.getString("scoreId") ?: ""
             ScoreDetailScreen(scoreId = scoreId, onBack = { navController.popBackStack() })
         }
+        composable("checkin_detail/{notifyId}/{cid}") { backStackEntry ->
+            val notifyId = backStackEntry.arguments?.getString("notifyId") ?: ""
+            val cid = backStackEntry.arguments?.getString("cid") ?: ""
+            CheckInDetailScreen(
+                notifyId = notifyId,
+                cid = cid,
+                onBack = { navController.popBackStack() },
+                onCheckInSaved = {
+                    navController.previousBackStackEntry?.savedStateHandle?.let { handle ->
+                        val current = handle.get<Int>("home_refresh_version") ?: 0
+                        handle["home_refresh_version"] = current + 1
+                    }
+                }
+            )
+        }
+        composable("task_set_detail/{mainId}/{notifyId}/{cid}/{relatedId}") { backStackEntry ->
+            val mainId = backStackEntry.arguments?.getString("mainId") ?: ""
+            val notifyId = backStackEntry.arguments?.getString("notifyId") ?: ""
+            val cid = backStackEntry.arguments?.getString("cid") ?: ""
+            val relatedId = backStackEntry.arguments?.getString("relatedId") ?: "-"
+            val refreshVersion by backStackEntry.savedStateHandle
+                .getStateFlow("task_set_refresh", 0)
+                .collectAsState()
+            TaskSetDetailScreen(
+                mainId = mainId,
+                notifyId = notifyId,
+                cid = cid,
+                relatedId = relatedId,
+                refreshVersion = refreshVersion,
+                onBack = { navController.popBackStack() },
+                onOpenRelated = { relatedNotifyId ->
+                    navController.navigate("checkin_detail/$relatedNotifyId/$cid")
+                },
+                onOpenAnswerSheet = { sheetMainId, sheetNotifyId, sheetCid, taskId, feedbackType, sheetId ->
+                    navController.navigate(
+                        "answer_sheet/$sheetMainId/$sheetNotifyId/$sheetCid/" +
+                            "$taskId/$feedbackType/$sheetId"
+                    )
+                }
+            )
+        }
+        composable(
+            "answer_sheet/{mainId}/{notifyId}/{cid}/{taskId}/{feedbackType}/{sheetId}"
+        ) { backStackEntry ->
+            val mainId = backStackEntry.arguments?.getString("mainId") ?: ""
+            val notifyId = backStackEntry.arguments?.getString("notifyId") ?: ""
+            val cid = backStackEntry.arguments?.getString("cid") ?: ""
+            val taskId = backStackEntry.arguments?.getString("taskId") ?: ""
+            val feedbackType = backStackEntry.arguments
+                ?.getString("feedbackType")
+                ?.toIntOrNull()
+                ?: -1
+            val sheetId = backStackEntry.arguments?.getString("sheetId") ?: ""
+            AnswerSheetScreen(
+                mainId = mainId,
+                notifyId = notifyId,
+                cid = cid,
+                taskId = taskId,
+                feedbackType = feedbackType,
+                sheetId = sheetId,
+                onBack = { navController.popBackStack() },
+                onSubmitted = {
+                    navController.previousBackStackEntry?.savedStateHandle?.let { handle ->
+                        val current = handle.get<Int>("task_set_refresh") ?: 0
+                        handle["task_set_refresh"] = current + 1
+                    }
+                    navController.popBackStack()
+                }
+            )
+        }
     }
 }
 
 // ---------------- 4. 具体业务页面 ----------------
 @Composable
-fun HomeScreen(navController: NavHostController) {
+fun HomeScreen(navController: NavHostController, refreshVersion: Int = 0) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
@@ -200,6 +290,33 @@ fun HomeScreen(navController: NavHostController) {
     var isLoadMore by remember { mutableStateOf(false) } // 分页加载状态
     var hasMore by remember { mutableStateOf(true) }
     var errorMsg by remember { mutableStateOf<String?>(null) }
+    val displayGroups = remember(items) {
+        val groups = linkedMapOf<String, MutableList<HomeItem>>()
+        items.forEach { item ->
+            val key = item.groupKey.ifBlank { item.id }
+            groups.getOrPut(key) { mutableListOf() }.add(item)
+        }
+        groups.map { (key, groupItems) ->
+            HomeDisplayGroup(key, groupItems)
+        }
+    }
+
+    fun openHomeItem(item: HomeItem) {
+        when {
+            item.type == 4 && item.scoreId != null -> {
+                navController.navigate("score_detail/${item.scoreId}")
+            }
+            item.type == 23 && item.mainId != null && item.cid.isNotBlank() -> {
+                navController.navigate(
+                    "task_set_detail/${item.mainId}/${item.id}/${item.cid}/" +
+                        "${item.relevantId ?: "-"}"
+                )
+            }
+            item.type == 0 && item.cid.isNotBlank() -> {
+                navController.navigate("checkin_detail/${item.id}/${item.cid}")
+            }
+        }
+    }
 
     // 统一的数据加载函数
     fun loadData(isRefresh: Boolean = false) {
@@ -236,7 +353,7 @@ fun HomeScreen(navController: NavHostController) {
     }
 
     // 页面进入时首次拉取数据
-    LaunchedEffect(Unit) {
+    LaunchedEffect(refreshVersion) {
         loadData(isRefresh = true)
     }
 
@@ -261,17 +378,18 @@ fun HomeScreen(navController: NavHostController) {
     ) {
         item { Spacer(modifier = Modifier.height(16.dp)) }
 
-        // 使用 itemsIndexed，顺便判断是否滑动到了底部
-        itemsIndexed(items, key = { _, item -> item.id }) { index, item ->
-            HomeCard(
-                item = item,
-                onClick = {
-                    // 类型 4 代表成绩，并且必须有 scoreId
-                    if (item.type == 4 && item.scoreId != null) {
-                        navController.navigate("score_detail/${item.scoreId}")
-                    }
-                }
-            )
+        items(displayGroups, key = { it.key }) { group ->
+            if (group.items.size == 1) {
+                HomeCard(
+                    item = group.items.first(),
+                    onClick = { openHomeItem(group.items.first()) }
+                )
+            } else {
+                HomeTaskGroupCard(
+                    items = group.items,
+                    onItemClick = ::openHomeItem
+                )
+            }
         }
 
         // 底部 Loading 提示
@@ -380,33 +498,381 @@ fun DetailRow(label: String, value: String) {
 @Composable
 fun MineScreen(onLogout: () -> Unit) {
     val context = LocalContext.current
-    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-        Card(modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
-            Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.Person, contentDescription = "头像", modifier = Modifier.size(64.dp))
-                Spacer(Modifier.width(16.dp))
-                Text("当前用户", style = MaterialTheme.typography.headlineSmall)
+    val memberId = remember { TokenStore.readMemberId(context).orEmpty() }
+    var profile by remember { mutableStateOf<AccountProfile?>(null) }
+    var loading by remember { mutableStateOf(true) }
+    var loadError by remember { mutableStateOf<String?>(null) }
+    var reloadVersion by remember { mutableIntStateOf(0) }
+    var debugOptions by remember {
+        mutableStateOf(AppSettings.readDebugOptions(context))
+    }
+    var confirmForceSubmit by remember { mutableStateOf(false) }
+    val versionName = remember {
+        runCatching {
+            context.packageManager.getPackageInfo(context.packageName, 0).versionName
+        }.getOrNull().orEmpty().ifBlank { "1.0" }
+    }
+
+    fun updateDebugOptions(transform: (DebugOptions) -> DebugOptions) {
+        val updated = transform(debugOptions)
+        debugOptions = updated
+        AppSettings.saveDebugOptions(context, updated)
+    }
+
+    LaunchedEffect(reloadVersion) {
+        val token = TokenStore.readToken(context)
+        if (token.isNullOrBlank() || memberId.isBlank()) {
+            loadError = "登录凭证缺失，请重新登录"
+            loading = false
+            return@LaunchedEffect
+        }
+        loading = true
+        ClassApi.getCurrentProfile(token, memberId)
+            .onSuccess {
+                profile = it
+                loadError = null
+            }
+            .onFailure {
+                loadError = it.message ?: "加载账号信息失败"
+            }
+        loading = false
+    }
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        item {
+            Spacer(Modifier.height(16.dp))
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.primaryContainer
+                )
+            ) {
+                Row(
+                    modifier = Modifier.padding(18.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(72.dp)
+                            .clip(CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (profile?.avatar.isNullOrBlank()) {
+                            Icon(
+                                Icons.Default.Person,
+                                contentDescription = "头像",
+                                modifier = Modifier.size(56.dp)
+                            )
+                        } else {
+                            AsyncImage(
+                                model = profile?.avatar,
+                                contentDescription = "账号头像",
+                                contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
+                    }
+                    Spacer(Modifier.width(16.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        when {
+                            loading -> Text(
+                                "正在加载账号信息…",
+                                style = MaterialTheme.typography.titleMedium
+                            )
+
+                            profile != null -> {
+                                val current = profile!!
+                                Text(
+                                    text = current.name.ifBlank {
+                                        current.wxName.ifBlank { "当前账号" }
+                                    },
+                                    style = MaterialTheme.typography.headlineSmall,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                if (current.wxName.isNotBlank()) {
+                                    Spacer(Modifier.height(4.dp))
+                                    Text(
+                                        text = "微信：${current.wxName}",
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+                                }
+                                current.phone?.takeIf { it.isNotBlank() }?.let {
+                                    Text(
+                                        text = "手机：$it",
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                }
+                            }
+
+                            else -> Text(
+                                text = "账号信息暂不可用",
+                                style = MaterialTheme.typography.titleMedium
+                            )
+                        }
+                    }
+                }
             }
         }
-        Text("设置", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(bottom = 8.dp))
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.Settings, contentDescription = "通用设置")
-                Spacer(Modifier.width(16.dp))
-                Text("通用设置", style = MaterialTheme.typography.bodyLarge)
+
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+                )
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "账号信息",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    SettingsInfoRow("成员 ID", profile?.memberId ?: memberId)
+                    SettingsInfoRow(
+                        "所属班级",
+                        profile?.classNames?.joinToString("、").orEmpty()
+                            .ifBlank { "未获取" }
+                    )
+                    SettingsInfoRow("登录状态", "已登录")
+                    SettingsInfoRow("客户端版本", versionName)
+                    loadError?.let {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            text = "账号信息加载失败：$it",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                        TextButton(onClick = { reloadVersion++ }) {
+                            Icon(Icons.Default.Refresh, contentDescription = null)
+                            Spacer(Modifier.width(6.dp))
+                            Text("重新加载")
+                        }
+                    }
+                }
             }
         }
-        Spacer(Modifier.weight(1f))
-        Button(
-            onClick = {
-                TokenStore.clear(context)
-                onLogout()
+
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+                )
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Settings, contentDescription = null)
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            text = "通用设置",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    SettingsInfoRow("语音评测", "火山引擎 SOE")
+                    SettingsInfoRow("媒体播放", "应用内播放")
+                    SettingsInfoRow("设计规范", "Material 3")
+                }
+            }
+        }
+
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.errorContainer
+                )
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Default.WarningAmber,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.error
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Column {
+                            Text(
+                                text = "开发调试（高风险）",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "仅供开发与流程测试",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        text = "风险提示：强制提交会跳过未完成校验，可能把不完整答卷提交到真实班级，影响成绩且通常无法撤回。其他开关也会改变正式作答行为，请仅在测试账号或明确知情时使用。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    HorizontalDivider(
+                        color = MaterialTheme.colorScheme.error.copy(alpha = 0.25f)
+                    )
+                    DebugSwitchRow(
+                        title = "强制提交",
+                        description = "跳过未完成其他任务、朗读次数和最低分校验，并强制确认整个任务。",
+                        checked = debugOptions.forceSubmit,
+                        onCheckedChange = { checked ->
+                            if (checked) {
+                                confirmForceSubmit = true
+                            } else {
+                                updateDebugOptions { it.copy(forceSubmit = false) }
+                            }
+                        }
+                    )
+                    DebugSwitchRow(
+                        title = "朗读只读一遍",
+                        description = "将老师要求的朗读遍数临时视为 1 遍。",
+                        checked = debugOptions.singleRead,
+                        onCheckedChange = { checked ->
+                            updateDebugOptions { it.copy(singleRead = checked) }
+                        }
+                    )
+                    DebugSwitchRow(
+                        title = "显示隐藏答案",
+                        description = "在听写、默写和背诵场景显示原本隐藏的文本、图片与答案。",
+                        checked = debugOptions.showHiddenAnswers,
+                        onCheckedChange = { checked ->
+                            updateDebugOptions {
+                                it.copy(showHiddenAnswers = checked)
+                            }
+                        }
+                    )
+                    if (debugOptions.isActive) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            text = "当前已有调试项开启，进入答题页后会显示调试提示。",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error,
+                            fontWeight = FontWeight.Bold
+                        )
+                        TextButton(
+                            onClick = {
+                                AppSettings.resetDebugOptions(context)
+                                debugOptions = DebugOptions()
+                            }
+                        ) {
+                            Text("关闭全部调试功能")
+                        }
+                    }
+                }
+            }
+        }
+
+        item {
+            Button(
+                onClick = {
+                    AppSettings.resetDebugOptions(context)
+                    TokenStore.clear(context)
+                    onLogout()
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 8.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.error
+                )
+            ) {
+                Text("退出登录")
+            }
+            Spacer(Modifier.height(16.dp))
+        }
+    }
+
+    if (confirmForceSubmit) {
+        AlertDialog(
+            onDismissRequest = { confirmForceSubmit = false },
+            icon = {
+                Icon(
+                    Icons.Default.WarningAmber,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.error
+                )
             },
-            modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-        ) {
-            Text("退出登录")
+            title = { Text("确认开启强制提交？") },
+            text = {
+                Text(
+                    "开启后可以绕过未完成任务、朗读次数和最低分限制，直接调用真实提交接口。错误提交可能影响真实作业成绩且无法撤回。"
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    updateDebugOptions { it.copy(forceSubmit = true) }
+                    confirmForceSubmit = false
+                }) {
+                    Text("确认开启", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmForceSubmit = false }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun SettingsInfoRow(label: String, value: String) {
+    Row(modifier = Modifier.padding(vertical = 4.dp)) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.width(92.dp)
+        )
+        SelectionContainer(modifier = Modifier.weight(1f)) {
+            Text(
+                text = value,
+                style = MaterialTheme.typography.bodyMedium
+            )
         }
+    }
+}
+
+@Composable
+private fun DebugSwitchRow(
+    title: String,
+    description: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.Medium
+            )
+            Text(
+                text = description,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onErrorContainer
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange
+        )
     }
 }
 
@@ -509,12 +975,149 @@ fun MemberCard(member: MemberInfo) {
 }
 
 @Composable
+fun HomeTaskGroupCard(
+    items: List<HomeItem>,
+    onItemClick: (HomeItem) -> Unit
+) {
+    val primary = items.first()
+    val displayTime = if (primary.endDay.isNotBlank()) {
+        "截止: ${primary.endDay}"
+    } else {
+        primary.createAt.replace("T", " ").substringBeforeLast(".").take(16)
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        )
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Surface(
+                    color = MaterialTheme.colorScheme.primary,
+                    shape = RoundedCornerShape(4.dp)
+                ) {
+                    Text(
+                        text = "任务组",
+                        color = MaterialTheme.colorScheme.onPrimary,
+                        style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                }
+                if (primary.subject.isNotBlank()) {
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = primary.subject,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Spacer(Modifier.weight(1f))
+                Text(
+                    text = displayTime,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.outline
+                )
+            }
+
+            Spacer(Modifier.height(12.dp))
+            Text(
+                text = primary.title,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            if (primary.textContent.isNotBlank()) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = primary.textContent,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            Spacer(Modifier.height(12.dp))
+            HorizontalDivider(
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+            )
+
+            items.forEach { item ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onItemClick(item) }
+                        .padding(vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.secondaryContainer,
+                        shape = RoundedCornerShape(4.dp)
+                    ) {
+                        Text(
+                            text = when (item.type) {
+                                0 -> "自定义作业"
+                                23 -> "听说读写"
+                                else -> "任务"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        text = if (item.endDay.isNotBlank()) {
+                            "截止 ${item.endDay}"
+                        } else {
+                            item.creatorName
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Text(
+                        text = if (item.isFeedback) "已提交" else "未提交",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (item.isFeedback) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.error
+                        },
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    TextButton(onClick = { onItemClick(item) }) {
+                        Text(if (item.isFeedback) "查看" else "去完成")
+                    }
+                }
+                if (item != items.last()) {
+                    HorizontalDivider(
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = primary.creatorName,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
 fun HomeCard(item: HomeItem, onClick: () -> Unit) {
     // 根据类型，决定左上角标签的文字和颜色
     val tagText = when (item.type) {
         0 -> "任务"
         4 -> "成绩"
-        23 -> "打卡"
+        23 -> "合集"
         else -> "通知"
     }
     val tagColor = when (item.type) {

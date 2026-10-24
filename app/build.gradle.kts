@@ -63,4 +63,10 @@ dependencies {
     implementation("org.jsoup:jsoup:1.23.2") // 用于解析 HTML
     implementation("io.coil-kt:coil-compose:2.7.0") // 用于在 Compose 显示二维码
 
+    // App 内拍照、录像
+    implementation("androidx.camera:camera-camera2:1.6.2")
+    implementation("androidx.camera:camera-lifecycle:1.6.2")
+    implementation("androidx.camera:camera-view:1.6.2")
+    implementation("androidx.camera:camera-video:1.6.2")
+
 }

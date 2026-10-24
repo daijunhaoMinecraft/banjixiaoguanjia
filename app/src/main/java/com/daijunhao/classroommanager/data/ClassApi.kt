@@ -30,6 +30,15 @@ data class MemberInfo(
     val wxName: String
 )
 
+data class AccountProfile(
+    val memberId: String,
+    val name: String,
+    val wxName: String,
+    val phone: String?,
+    val avatar: String,
+    val classNames: List<String>
+)
+
 object ClassApi {
     private val client = OkHttpClient()
     private val jsonMedia = "application/json; charset=utf-8".toMediaType()
@@ -122,6 +131,39 @@ object ClassApi {
                     Result.failure(Exception(json.optString("msg", "获取成员失败")))
                 }
             }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun getCurrentProfile(
+        token: String,
+        memberId: String
+    ): Result<AccountProfile> = withContext(Dispatchers.IO) {
+        try {
+            val classes = getClassList(token, memberId).getOrElse {
+                return@withContext Result.failure(it)
+            }
+            var profile: MemberInfo? = null
+            for (clazz in classes) {
+                val members = getMembersByCid(token, clazz.id).getOrNull() ?: continue
+                profile = members.firstOrNull { it.id == memberId }
+                if (profile != null) break
+            }
+            val member = profile
+                ?: return@withContext Result.failure(
+                    Exception("未在班级成员中找到当前账号")
+                )
+            Result.success(
+                AccountProfile(
+                    memberId = member.id.ifBlank { memberId },
+                    name = member.name,
+                    wxName = member.wxName,
+                    phone = member.phone,
+                    avatar = member.avatar,
+                    classNames = classes.map { it.className }.distinct()
+                )
+            )
         } catch (e: Exception) {
             Result.failure(e)
         }
