@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -58,6 +59,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.PopupProperties
 import com.daijunhao.classroommanager.data.ClassApi
 import com.daijunhao.classroommanager.data.MemberInfo
 import com.daijunhao.classroommanager.data.SavedScoreExport
@@ -251,8 +253,8 @@ fun ScoreDetailScreen(
                     val filteredMembers = remember(nameInput, members) {
                         members.filter { member ->
                             nameInput.isBlank() ||
-                                member.name.contains(nameInput, ignoreCase = true)
-                        }.take(15)
+                                    member.name.contains(nameInput, ignoreCase = true)
+                        } // 移除了 .take(15)，这样名单过长时可以在下拉菜单中完整滚动查看
                     }
                     Box {
                         OutlinedTextField(
@@ -299,8 +301,10 @@ fun ScoreDetailScreen(
                         )
                         DropdownMenu(
                             expanded = suggestionsOpen &&
-                                filteredMembers.isNotEmpty(),
-                            onDismissRequest = { suggestionsOpen = false }
+                                    filteredMembers.isNotEmpty(),
+                            onDismissRequest = { suggestionsOpen = false },
+                            properties = PopupProperties(focusable = false), // 核心修复：防止夺走焦点导致输入法弹开
+                            modifier = Modifier.heightIn(max = 280.dp) // 辅助修复：限制最大高度，保证软键盘开启时也可以滚动
                         ) {
                             filteredMembers.forEach { member ->
                                 DropdownMenuItem(
