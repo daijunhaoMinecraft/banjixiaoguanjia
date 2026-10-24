@@ -67,6 +67,35 @@ data class CheckInDetail(
     val media: List<SubmissionMedia>
 )
 
+enum class CheckInStudentState {
+    SUBMITTED,
+    WRONG,
+    NOT_SUBMITTED
+}
+
+data class CheckInClassStudent(
+    val memberId: String,
+    val name: String,
+    val studentNumber: Int,
+    val state: CheckInStudentState,
+    val statusCode: Int?,
+    val acceptId: String?
+)
+
+data class CheckInClassAnalysis(
+    val title: String,
+    val students: List<CheckInClassStudent>
+) {
+    val submittedCount: Int
+        get() = students.count { it.state == CheckInStudentState.SUBMITTED }
+
+    val wrongCount: Int
+        get() = students.count { it.state == CheckInStudentState.WRONG }
+
+    val notSubmittedCount: Int
+        get() = students.count { it.state == CheckInStudentState.NOT_SUBMITTED }
+}
+
 enum class CheckInUploadType(
     val category: String,
     val directory: String,
@@ -143,44 +172,58 @@ object CheckInApi {
         cid: String
     ): Result<CheckInDetail> = withContext(Dispatchers.IO) {
         try {
-            val body = JSONObject().apply {
+            val bodyJson = JSONObject().apply {
                 put("_id", notifyId)
                 put("cid", cid)
                 put("member_id", memberId)
                 put("cls_ts", System.currentTimeMillis())
                 put("daka_day", "")
-            }.toString().toRequestBody(jsonMedia)
+            }
+            val cacheIdentity = "$token|$memberId|$notifyId|$cid"
+            val cachedBody = ApiCache.read(
+                namespace = "checkins",
+                identity = cacheIdentity,
+                maxAgeMillis = 60_000L
+            )
 
             val request = Request.Builder()
                 .url("$BASE_URL/applet/notify/checkNew2Parent")
-                .post(body)
+                .post(bodyJson.toString().toRequestBody(jsonMedia))
                 .apply { addCommonHeaders(token) }
                 .build()
 
-            apiClient.newCall(request).execute().use { response ->
-                val responseBody = response.body?.string().orEmpty()
-                if (!response.isSuccessful) {
-                    return@withContext Result.failure(httpError(response.code, responseBody))
+            val responseBody = if (cachedBody != null) {
+                cachedBody
+            } else {
+                apiClient.newCall(request).execute().use { response ->
+                    val body = response.body?.string().orEmpty()
+                    if (!response.isSuccessful) {
+                        throw httpError(response.code, body)
+                    }
+                    if (body.isNotBlank()) {
+                        ApiCache.write("checkins", cacheIdentity, body)
+                    }
+                    body
                 }
+            }
 
-                val envelope = JSONObject(responseBody)
-                val code = envelope.optInt("code", -1)
-                if (code != 0) {
-                    return@withContext Result.failure(
-                        Exception(envelope.optString("msg", "获取打卡详情失败"))
-                    )
-                }
-
-                val data = envelope.optJSONObject("data")
-                    ?: return@withContext Result.failure(Exception("打卡详情数据为空"))
-                Result.success(
-                    parseDetail(
-                        data = data,
-                        fallbackCid = cid,
-                        memberId = memberId
-                    )
+            val envelope = JSONObject(responseBody)
+            val code = envelope.optInt("code", -1)
+            if (code != 0) {
+                return@withContext Result.failure(
+                    Exception(envelope.optString("msg", "获取打卡详情失败"))
                 )
             }
+
+            val data = envelope.optJSONObject("data")
+                ?: return@withContext Result.failure(Exception("打卡详情数据为空"))
+            Result.success(
+                parseDetail(
+                    data = data,
+                    fallbackCid = cid,
+                    memberId = memberId
+                )
+            )
         } catch (e: Exception) {
             Log.e(TAG, "getCheckInDetail failed", e)
             Result.failure(e)
@@ -246,6 +289,107 @@ object CheckInApi {
                 Result.failure(e)
             }
         }
+
+    suspend fun getClassAnalysis(
+        token: String,
+        memberId: String,
+        notifyId: String,
+        cid: String
+    ): Result<CheckInClassAnalysis> = withContext(Dispatchers.IO) {
+        try {
+            val bodyJson = JSONObject().apply {
+                put("_id", notifyId)
+                put("cid", cid)
+                put("member_id", memberId)
+                put("cls_ts", System.currentTimeMillis())
+                put("daka_day", "")
+            }
+            val cacheIdentity = "$token|$memberId|$notifyId|$cid"
+            val cachedBody = ApiCache.read(
+                namespace = "checkins",
+                identity = cacheIdentity,
+                maxAgeMillis = 60_000L
+            )
+            val request = Request.Builder()
+                .url("$BASE_URL/applet/notify/checkNew2Parent")
+                .post(bodyJson.toString().toRequestBody(jsonMedia))
+                .apply { addCommonHeaders(token) }
+                .build()
+            val responseBody = if (cachedBody != null) {
+                cachedBody
+            } else {
+                apiClient.newCall(request).execute().use { response ->
+                    val body = response.body?.string().orEmpty()
+                    if (!response.isSuccessful) {
+                        throw httpError(response.code, body)
+                    }
+                    if (body.isNotBlank()) {
+                        ApiCache.write("checkins", cacheIdentity, body)
+                    }
+                    body
+                }
+            }
+            val envelope = JSONObject(responseBody)
+            if (envelope.optInt("code", -1) != 0) {
+                return@withContext Result.failure(
+                    Exception(envelope.optString("msg", "获取班级打卡情况失败"))
+                )
+            }
+            val data = envelope.optJSONObject("data")
+                ?: return@withContext Result.failure(Exception("打卡数据为空"))
+            val notifyTitle = data.optJSONObject("notify")
+                ?.optString("title")
+                .orEmpty()
+                .ifBlank { "自定义作业" }
+            val membersMap = data.optJSONObject("membersMap") ?: JSONObject()
+            val feedbacks = data.optJSONArray("feedbacks") ?: JSONArray()
+            val feedbackByMember = buildMap {
+                for (index in 0 until feedbacks.length()) {
+                    val feedback = feedbacks.optJSONObject(index) ?: continue
+                    val feedbackMemberId = feedback.optString("member_id")
+                    if (feedbackMemberId.isNotBlank()) {
+                        put(feedbackMemberId, feedback)
+                    }
+                }
+            }
+            val students = buildList {
+                val keys = membersMap.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    val member = membersMap.optJSONObject(key) ?: continue
+                    val targetMemberId = member.optString("member_id")
+                        .ifBlank { key }
+                    val feedback = feedbackByMember[targetMemberId]
+                    val status = feedback?.optInt("status")
+                    add(
+                        CheckInClassStudent(
+                            memberId = targetMemberId,
+                            name = member.optString("name", "未命名学生"),
+                            studentNumber = member.optInt(
+                                "snum",
+                                Int.MAX_VALUE
+                            ),
+                            state = when {
+                                feedback == null -> CheckInStudentState.NOT_SUBMITTED
+                                status != null && status < 0 -> CheckInStudentState.WRONG
+                                else -> CheckInStudentState.SUBMITTED
+                            },
+                            statusCode = status,
+                            acceptId = feedback?.optString("_id")
+                                ?.takeIf { it.isNotBlank() }
+                        )
+                    )
+                }
+            }.sortedWith(
+                compareBy<CheckInClassStudent> { it.studentNumber }
+                    .thenBy { it.name }
+            )
+            Result.success(CheckInClassAnalysis(notifyTitle, students))
+        } catch (e: Exception) {
+            Log.e(TAG, "getClassAnalysis failed", e)
+            Result.failure(e)
+        }
+    }
 
     suspend fun uploadMedia(
         context: Context,
@@ -434,6 +578,8 @@ object CheckInApi {
                     )
                 }
                 if (responseBody.isBlank()) {
+                    ApiCache.clearNamespace("checkins")
+                    ApiCache.clearNamespace("tasks")
                     return@withContext Result.success(Unit)
                 }
 
@@ -443,6 +589,8 @@ object CheckInApi {
                         Exception(envelope.optString("msg", "保存打卡失败"))
                     )
                 }
+                ApiCache.clearNamespace("checkins")
+                ApiCache.clearNamespace("tasks")
                 Result.success(Unit)
             }
         } catch (e: Exception) {

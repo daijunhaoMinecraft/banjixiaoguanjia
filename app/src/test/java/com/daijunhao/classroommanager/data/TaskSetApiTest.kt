@@ -12,7 +12,7 @@ class TaskSetApiTest {
 
         assertEquals(SubmissionMediaKind.IMAGE, media?.kind)
         assertEquals(
-            "https://img-1302562365.cos.ap-beijing.myqcloud.com/" +
+            "https://img.banjixiaoguanjia.com/" +
                 "_cos/oWRkU0em6bqAHVyAdmb8bsBApNRQ_app_image/example_1792841154214.jpg",
             media?.url
         )
@@ -26,7 +26,7 @@ class TaskSetApiTest {
 
         assertEquals(SubmissionMediaKind.VIDEO, media?.kind)
         assertEquals(
-            "https://campusvideo.oss-cn-beijing.aliyuncs.com/" +
+            "https://video.welife001.com/" +
                 "_oss/66ea446285290d897384175c/app_video/example_1792837585046.mp4",
             media?.url
         )
@@ -40,7 +40,7 @@ class TaskSetApiTest {
 
         assertEquals(SubmissionMediaKind.IMAGE, media?.kind)
         assertEquals(
-            "https://img-1302562365.cos.ap-beijing.myqcloud.com/" +
+            "https://img.banjixiaoguanjia.com/" +
                 "app_image_ai_task_tag_cos/example_1778337386572.jpg",
             media?.url
         )
@@ -70,6 +70,34 @@ class TaskSetApiTest {
         assertEquals(
             "https://tosvideo.banjixiaoguanjia.com/" +
                 "_tos/66ea446285290d897384175c/app_video/example_1792165125918.mp4",
+            media?.url
+        )
+    }
+
+    @Test
+    fun resolvesCosVideoWithVideoDomain() {
+        val media = TaskSetApi.resolveSubmissionMedia(
+            "_cos/oWRkU0UXFRBDBQe_5d9Plm23S8bI/app_video/example_1792759480818.mp4"
+        )
+
+        assertEquals(SubmissionMediaKind.VIDEO, media?.kind)
+        assertEquals(
+            "https://video.banjixiaoguanjia.com/" +
+                "_cos/oWRkU0UXFRBDBQe_5d9Plm23S8bI/app_video/example_1792759480818.mp4",
+            media?.url
+        )
+    }
+
+    @Test
+    fun rewritesLegacyCosVideoHostToVideoDomain() {
+        val media = TaskSetApi.resolveSubmissionMedia(
+            "https://img-1302562365.cos.ap-beijing.myqcloud.com/" +
+                "_cos/oWRkU0UXFRBDBQe_5d9Plm23S8bI/app_video/example_1792759480818.mp4"
+        )
+
+        assertEquals(
+            "https://video.banjixiaoguanjia.com/" +
+                "_cos/oWRkU0UXFRBDBQe_5d9Plm23S8bI/app_video/example_1792759480818.mp4",
             media?.url
         )
     }

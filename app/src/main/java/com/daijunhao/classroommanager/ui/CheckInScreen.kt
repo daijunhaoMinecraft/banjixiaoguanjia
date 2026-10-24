@@ -110,11 +110,18 @@ private data class MediaPickerRequest(
 fun CheckInDetailScreen(
     notifyId: String,
     cid: String,
+    targetMemberId: String? = null,
+    targetMemberName: String = "",
     onBack: () -> Unit,
+    onOpenClassAnalysis: () -> Unit = {},
     onCheckInSaved: () -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val localMemberId = remember { TokenStore.readMemberId(context).orEmpty() }
+    val viewMemberId = targetMemberId?.takeIf { it.isNotBlank() }
+        ?: localMemberId
+    val isReadOnly = targetMemberId?.isNotBlank() == true
     val itemStates = remember(notifyId) { mutableStateMapOf<String, ItemEditorState>() }
 
     var detail by remember(notifyId) { mutableStateOf<CheckInDetail?>(null) }
@@ -287,10 +294,9 @@ fun CheckInDetailScreen(
         }
     }
 
-    LaunchedEffect(notifyId, cid, reloadVersion) {
+    LaunchedEffect(notifyId, cid, viewMemberId, reloadVersion) {
         val token = TokenStore.readToken(context)
-        val memberId = TokenStore.readMemberId(context)
-        if (token.isNullOrBlank() || memberId.isNullOrBlank()) {
+        if (token.isNullOrBlank() || viewMemberId.isBlank()) {
             loadError = "登录凭证失效，请重新登录"
             loading = false
             return@LaunchedEffect
@@ -299,7 +305,7 @@ fun CheckInDetailScreen(
         if (detail == null) loading = true
         CheckInApi.getCheckInDetail(
             token = token,
-            memberId = memberId,
+            memberId = viewMemberId,
             notifyId = notifyId,
             cid = cid
         ).onSuccess { loaded ->
@@ -329,8 +335,7 @@ fun CheckInDetailScreen(
         if (isBusy) return
 
         val token = TokenStore.readToken(context)
-        val memberId = TokenStore.readMemberId(context)
-        if (token.isNullOrBlank() || memberId.isNullOrBlank()) {
+        if (token.isNullOrBlank() || viewMemberId.isBlank()) {
             Toast.makeText(context, "登录凭证失效，请重新登录", Toast.LENGTH_SHORT).show()
             return
         }
@@ -401,7 +406,7 @@ fun CheckInDetailScreen(
                                     CheckInApi.uploadMedia(
                                         context = context,
                                         credentials = credentials,
-                                        memberId = memberId,
+                                        memberId = viewMemberId,
                                         media = entry.pending.media,
                                         onProgress = { progress ->
                                             scope.launch {
@@ -460,7 +465,7 @@ fun CheckInDetailScreen(
                 }
                 val submitResult = CheckInApi.submitFeedback(
                     token = token,
-                    memberId = memberId,
+                    memberId = viewMemberId,
                     detail = currentDetail,
                     filesByItem = filesByItem,
                     feedbackText = feedbackText,
@@ -524,7 +529,7 @@ fun CheckInDetailScreen(
             )
         },
         bottomBar = {
-            if (detail != null) {
+            if (detail != null && !isReadOnly) {
                 Surface(shadowElevation = 8.dp) {
                     Column(
                         modifier = Modifier
@@ -608,12 +613,54 @@ fun CheckInDetailScreen(
                         )
                     }
 
+                    if (isReadOnly) {
+                        item {
+                            Surface(
+                                color = MaterialTheme.colorScheme.tertiaryContainer,
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text(
+                                    text = "正在查看 ${targetMemberName.ifBlank { "该学生" }} 的打卡内容（只读）。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier.padding(10.dp)
+                                )
+                            }
+                        }
+                    } else {
+                        item {
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.secondaryContainer
+                                )
+                            ) {
+                                Column(modifier = Modifier.padding(16.dp)) {
+                                    Text(
+                                        text = "全班完成分析",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Spacer(Modifier.height(6.dp))
+                                    Text(
+                                        text = "查看全班提交、错误/需订正和未提交名单。",
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                    Spacer(Modifier.height(10.dp))
+                                    OutlinedButton(onClick = onOpenClassAnalysis) {
+                                        Text("查看全班情况")
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     items(currentDetail.items, key = { it.id }) { item ->
                         val editor = editorOf(item)
                         CheckInItemCard(
                             item = item,
                             editor = editor,
                             enabled = !isBusy,
+                            readOnly = isReadOnly,
                             onPickVideo = {
                                 pickerRequest = MediaPickerRequest(
                                     item.id,
@@ -677,7 +724,8 @@ fun CheckInDetailScreen(
                                     placeholder = { Text("选填，可补充打卡说明") },
                                     minLines = 3,
                                     maxLines = 6,
-                                    enabled = !isBusy
+                                    enabled = !isBusy,
+                                    readOnly = isReadOnly
                                 )
                             }
                         }
@@ -818,6 +866,7 @@ private fun CheckInItemCard(
     item: CheckInItem,
     editor: ItemEditorState,
     enabled: Boolean,
+    readOnly: Boolean,
     onPickVideo: () -> Unit,
     onPickImage: () -> Unit,
     onRecordVideo: () -> Unit,
@@ -880,7 +929,7 @@ private fun CheckInItemCard(
                 Spacer(Modifier.height(10.dp))
                 SavedFileRow(
                     file = file,
-                    enabled = enabled,
+                    enabled = enabled && !readOnly,
                     onDelete = { onRemoveSavedFile(file) },
                     onOpen = onOpenMedia
                 )
@@ -890,18 +939,19 @@ private fun CheckInItemCard(
                 Spacer(Modifier.height(10.dp))
                 PendingFileRow(
                     pending = pending,
-                    enabled = enabled,
+                    enabled = enabled && !readOnly,
                     onDelete = { onRemovePendingFile(pending) }
                 )
             }
 
-            Spacer(Modifier.height(12.dp))
-            HorizontalDivider(
-                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
-            )
-            Spacer(Modifier.height(10.dp))
+            if (!readOnly) {
+                Spacer(Modifier.height(12.dp))
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                )
+                Spacer(Modifier.height(10.dp))
 
-            when (uploadType) {
+                when (uploadType) {
                 CheckInUploadType.VIDEO -> {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(
@@ -961,6 +1011,7 @@ private fun CheckInItemCard(
                         color = MaterialTheme.colorScheme.error
                     )
                 }
+                }
             }
         }
     }
@@ -973,6 +1024,7 @@ private fun SavedFileRow(
     onDelete: () -> Unit,
     onOpen: (SubmissionMedia) -> Unit
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
     val media = TaskSetApi.resolveSubmissionMedia(file.objectKey)
     Surface(
         color = MaterialTheme.colorScheme.surface,
@@ -1010,6 +1062,13 @@ private fun SavedFileRow(
                                 "查看"
                             }
                         )
+                    }
+                }
+                if (media != null && canOpenInBrowser(media.url)) {
+                    TextButton(onClick = {
+                        openInBrowser(context, media.url)
+                    }) {
+                        Text("浏览器")
                     }
                 }
                 TextButton(onClick = onDelete, enabled = enabled) {

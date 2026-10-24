@@ -1,11 +1,14 @@
 package com.daijunhao.classroommanager
 
+import android.net.Uri
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -15,9 +18,7 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.List
-import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -38,10 +39,14 @@ import com.daijunhao.classroommanager.ui.LoginScreen
 import com.daijunhao.classroommanager.ui.CheckInDetailScreen
 import com.daijunhao.classroommanager.ui.TaskSetDetailScreen
 import com.daijunhao.classroommanager.ui.AnswerSheetScreen
+import com.daijunhao.classroommanager.ui.ScoreDetailScreen
+import com.daijunhao.classroommanager.ui.ClassTaskAnalysisScreen
+import com.daijunhao.classroommanager.ui.CheckInClassAnalysisScreen
 import com.daijunhao.classroommanager.data.TokenStore
 import com.daijunhao.classroommanager.data.ClassApi
 import com.daijunhao.classroommanager.data.ClassInfo
 import com.daijunhao.classroommanager.data.AccountProfile
+import com.daijunhao.classroommanager.data.ApiCache
 import com.daijunhao.classroommanager.data.AppSettings
 import com.daijunhao.classroommanager.data.DebugOptions
 import coil.compose.AsyncImage
@@ -59,14 +64,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import com.daijunhao.classroommanager.data.HomeApi
 import com.daijunhao.classroommanager.data.HomeItem
 import kotlinx.coroutines.launch
-import com.daijunhao.classroommanager.data.ScoreApi
-import com.daijunhao.classroommanager.data.ScoreResultData
 import androidx.compose.foundation.layout.Arrangement
 
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        ApiCache.init(applicationContext)
         enableEdgeToEdge()
         setContent {
             ClassroomManagerTheme {
@@ -201,9 +205,14 @@ fun AppNavHost(navController: NavHostController, startLoggedIn: Boolean, modifie
                 }
             })
         }
-        composable("score_detail/{scoreId}") { backStackEntry ->
+        composable("score_detail/{scoreId}/{cid}") { backStackEntry ->
             val scoreId = backStackEntry.arguments?.getString("scoreId") ?: ""
-            ScoreDetailScreen(scoreId = scoreId, onBack = { navController.popBackStack() })
+            val cid = backStackEntry.arguments?.getString("cid") ?: ""
+            ScoreDetailScreen(
+                scoreId = scoreId,
+                cid = cid,
+                onBack = { navController.popBackStack() }
+            )
         }
         composable("checkin_detail/{notifyId}/{cid}") { backStackEntry ->
             val notifyId = backStackEntry.arguments?.getString("notifyId") ?: ""
@@ -212,12 +221,46 @@ fun AppNavHost(navController: NavHostController, startLoggedIn: Boolean, modifie
                 notifyId = notifyId,
                 cid = cid,
                 onBack = { navController.popBackStack() },
+                onOpenClassAnalysis = {
+                    navController.navigate("checkin_class_analysis/$notifyId/$cid")
+                },
                 onCheckInSaved = {
                     navController.previousBackStackEntry?.savedStateHandle?.let { handle ->
                         val current = handle.get<Int>("home_refresh_version") ?: 0
                         handle["home_refresh_version"] = current + 1
                     }
                 }
+            )
+        }
+        composable("checkin_class_analysis/{notifyId}/{cid}") { backStackEntry ->
+            val notifyId = backStackEntry.arguments?.getString("notifyId") ?: ""
+            val cid = backStackEntry.arguments?.getString("cid") ?: ""
+            CheckInClassAnalysisScreen(
+                notifyId = notifyId,
+                cid = cid,
+                onBack = { navController.popBackStack() },
+                onOpenMember = { memberId, memberName ->
+                    navController.navigate(
+                        "member_checkin/$notifyId/$cid/$memberId/" +
+                            Uri.encode(memberName)
+                    )
+                }
+            )
+        }
+        composable(
+            "member_checkin/{notifyId}/{cid}/{memberId}/{memberName}"
+        ) { backStackEntry ->
+            val notifyId = backStackEntry.arguments?.getString("notifyId") ?: ""
+            val cid = backStackEntry.arguments?.getString("cid") ?: ""
+            val memberId = backStackEntry.arguments?.getString("memberId") ?: ""
+            val memberName = backStackEntry.arguments?.getString("memberName").orEmpty()
+            CheckInDetailScreen(
+                notifyId = notifyId,
+                cid = cid,
+                targetMemberId = memberId,
+                targetMemberName = memberName,
+                onBack = { navController.popBackStack() },
+                onCheckInSaved = {}
             )
         }
         composable("task_set_detail/{mainId}/{notifyId}/{cid}/{relatedId}") { backStackEntry ->
@@ -238,12 +281,56 @@ fun AppNavHost(navController: NavHostController, startLoggedIn: Boolean, modifie
                 onOpenRelated = { relatedNotifyId ->
                     navController.navigate("checkin_detail/$relatedNotifyId/$cid")
                 },
+                onOpenClassAnalysis = {
+                    navController.navigate(
+                        "class_task_analysis/$mainId/$notifyId/$cid"
+                    )
+                },
                 onOpenAnswerSheet = { sheetMainId, sheetNotifyId, sheetCid, taskId, feedbackType, sheetId ->
                     navController.navigate(
                         "answer_sheet/$sheetMainId/$sheetNotifyId/$sheetCid/" +
                             "$taskId/$feedbackType/$sheetId"
                     )
                 }
+            )
+        }
+        composable(
+            "class_task_analysis/{mainId}/{notifyId}/{cid}"
+        ) { backStackEntry ->
+            val mainId = backStackEntry.arguments?.getString("mainId") ?: ""
+            val notifyId = backStackEntry.arguments?.getString("notifyId") ?: ""
+            val cid = backStackEntry.arguments?.getString("cid") ?: ""
+            ClassTaskAnalysisScreen(
+                mainId = mainId,
+                notifyId = notifyId,
+                cid = cid,
+                onBack = { navController.popBackStack() },
+                onOpenMember = { memberId, memberName ->
+                    navController.navigate(
+                        "member_task_set/$mainId/$notifyId/$cid/$memberId/" +
+                            Uri.encode(memberName)
+                    )
+                }
+            )
+        }
+        composable(
+            "member_task_set/{mainId}/{notifyId}/{cid}/{memberId}/{memberName}"
+        ) { backStackEntry ->
+            val mainId = backStackEntry.arguments?.getString("mainId") ?: ""
+            val notifyId = backStackEntry.arguments?.getString("notifyId") ?: ""
+            val cid = backStackEntry.arguments?.getString("cid") ?: ""
+            val memberId = backStackEntry.arguments?.getString("memberId") ?: ""
+            val memberName = backStackEntry.arguments?.getString("memberName").orEmpty()
+            TaskSetDetailScreen(
+                mainId = mainId,
+                notifyId = notifyId,
+                cid = cid,
+                relatedId = "-",
+                targetMemberId = memberId,
+                targetMemberName = memberName,
+                onBack = { navController.popBackStack() },
+                onOpenRelated = {},
+                onOpenAnswerSheet = { _, _, _, _, _, _ -> }
             )
         }
         composable(
@@ -304,7 +391,7 @@ fun HomeScreen(navController: NavHostController, refreshVersion: Int = 0) {
     fun openHomeItem(item: HomeItem) {
         when {
             item.type == 4 && item.scoreId != null -> {
-                navController.navigate("score_detail/${item.scoreId}")
+                navController.navigate("score_detail/${item.scoreId}/${item.cid}")
             }
             item.type == 23 && item.mainId != null && item.cid.isNotBlank() -> {
                 navController.navigate(
@@ -506,6 +593,7 @@ fun MineScreen(onLogout: () -> Unit) {
     var debugOptions by remember {
         mutableStateOf(AppSettings.readDebugOptions(context))
     }
+    var cacheSize by remember { mutableStateOf(ApiCache.sizeBytes()) }
     var confirmForceSubmit by remember { mutableStateOf(false) }
     val versionName = remember {
         runCatching {
@@ -679,6 +767,14 @@ fun MineScreen(onLogout: () -> Unit) {
                     SettingsInfoRow("语音评测", "火山引擎 SOE")
                     SettingsInfoRow("媒体播放", "应用内播放")
                     SettingsInfoRow("设计规范", "Material 3")
+                    SettingsInfoRow("接口缓存", formatCacheSize(cacheSize))
+                    TextButton(onClick = {
+                        ApiCache.clearAll()
+                        cacheSize = ApiCache.sizeBytes()
+                        Toast.makeText(context, "接口缓存已清除", Toast.LENGTH_SHORT).show()
+                    }) {
+                        Text("清除接口缓存")
+                    }
                 }
             }
         }
@@ -873,6 +969,22 @@ private fun DebugSwitchRow(
             checked = checked,
             onCheckedChange = onCheckedChange
         )
+    }
+}
+
+private fun formatCacheSize(bytes: Long): String {
+    return when {
+        bytes >= 1024 * 1024 -> String.format(
+            java.util.Locale.US,
+            "%.1f MB",
+            bytes / (1024.0 * 1024.0)
+        )
+        bytes >= 1024 -> String.format(
+            java.util.Locale.US,
+            "%.1f KB",
+            bytes / 1024.0
+        )
+        else -> "$bytes B"
     }
 }
 
@@ -1233,100 +1345,3 @@ fun HomeCard(item: HomeItem, onClick: () -> Unit) {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun ScoreDetailScreen(scoreId: String, onBack: () -> Unit) {
-    val context = LocalContext.current
-    var scoreData by remember { mutableStateOf<ScoreResultData?>(null) }
-    var loading by remember { mutableStateOf(true) }
-    var errorMsg by remember { mutableStateOf<String?>(null) }
-
-    LaunchedEffect(scoreId) {
-        val token = TokenStore.readToken(context)
-        if (token != null) {
-            ScoreApi.getScoreDetail(token, scoreId).onSuccess { data ->
-                scoreData = data
-                loading = false
-            }.onFailure {
-                errorMsg = it.message
-                loading = false
-            }
-        }
-    }
-
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("成绩详情") },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(imageVector = Icons.Default.ArrowBack, contentDescription = "返回")
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer
-                )
-            )
-        }
-    ) { padding ->
-        if (loading) {
-            Box(modifier = Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator()
-            }
-            return@Scaffold
-        }
-
-        if (errorMsg != null || scoreData == null) {
-            Box(modifier = Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
-                Text(text = "加载失败: ${errorMsg ?: "未知错误"}", color = MaterialTheme.colorScheme.error)
-            }
-            return@Scaffold
-        }
-
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .padding(16.dp)
-        ) {
-            // 头部：考试标题与时间
-            Text(text = scoreData!!.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(text = "考试时间: ${scoreData!!.examTime}", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.outline)
-
-            Spacer(modifier = Modifier.height(16.dp))
-            HorizontalDivider()
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // 成绩明细列表
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(scoreData!!.scores, key = { it.subject }) { subjectScore ->
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 12.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = subjectScore.subject,
-                                style = MaterialTheme.typography.bodyLarge,
-                                fontWeight = FontWeight.Medium
-                            )
-                            Spacer(modifier = Modifier.weight(1f))
-                            Text(
-                                text = subjectScore.score,
-                                style = MaterialTheme.typography.titleMedium,
-                                color = MaterialTheme.colorScheme.primary,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
-}

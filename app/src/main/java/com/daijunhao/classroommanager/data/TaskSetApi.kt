@@ -43,7 +43,9 @@ data class TaskSetTask(
     val endLabel: String,
     val status: Int,
     val media: List<SubmissionMedia>,
-    val feedbacks: List<TaskFeedbackSummary>
+    val feedbacks: List<TaskFeedbackSummary>,
+    val memberStatuses: Map<String, Int> = emptyMap(),
+    val memberAcceptIds: Map<String, String> = emptyMap()
 )
 
 data class TaskFeedbackSummary(
@@ -68,6 +70,7 @@ data class TaskFeedbackHistory(
     val title: String,
     val subTitle: String,
     val submitted: Boolean,
+    val status: Int?,
     val score: String?,
     val durationSeconds: Int?,
     val media: List<SubmissionMedia>,
@@ -97,10 +100,18 @@ data class SubmissionMedia(
 object TaskSetApi {
     private const val TAG = "TaskSetApi"
     private const val BASE_URL = "https://b.welife001.com"
-    private const val COS_URL = "https://img-1302562365.cos.ap-beijing.myqcloud.com/"
-    private const val OSS_URL = "https://campusvideo.oss-cn-beijing.aliyuncs.com/"
-    private const val TOS_RECORD_URL = "https://tosrecord.banjixiaoguanjia.com/"
+    private const val COS_IMAGE_URL = "https://img.banjixiaoguanjia.com/"
+    private const val COS_VIDEO_URL = "https://video.banjixiaoguanjia.com/"
+    private const val COS_AUDIO_URL = "https://record.banjixiaoguanjia.com/"
+    private const val COS_FILE_URL = "https://file.banjixiaoguanjia.com/"
+    private const val OSS_IMAGE_URL = "https://img.welife001.com/"
+    private const val OSS_VIDEO_URL = "https://video.welife001.com/"
+    private const val OSS_AUDIO_URL = "https://record.welife001.com/"
+    private const val OSS_FILE_URL = "https://file.welife001.com/"
+    private const val TOS_IMAGE_URL = "https://tosimg.banjixiaoguanjia.com/"
     private const val TOS_VIDEO_URL = "https://tosvideo.banjixiaoguanjia.com/"
+    private const val TOS_AUDIO_URL = "https://tosrecord.banjixiaoguanjia.com/"
+    private const val TOS_FILE_URL = "https://tosfile.banjixiaoguanjia.com/"
 
     private val jsonMedia = "application/json; charset=utf-8".toMediaType()
     private val client = OkHttpClient.Builder()
@@ -130,7 +141,7 @@ object TaskSetApi {
             )
             val data = response.optJSONObject("data")
                 ?: return@withContext Result.failure(Exception("主任务数据为空"))
-            Result.success(parseTaskSet(data, mainId))
+            Result.success(parseTaskSet(data, cid, mainId))
         } catch (e: Exception) {
             Log.e(TAG, "getTaskSet failed", e)
             Result.failure(e)
@@ -175,6 +186,7 @@ object TaskSetApi {
                                 title = feedback.title,
                                 subTitle = feedback.subTitle,
                                 submitted = false,
+                                status = null,
                                 score = null,
                                 durationSeconds = null,
                                 media = emptyList()
@@ -272,7 +284,11 @@ object TaskSetApi {
         }
     }
 
-    private fun parseTaskSet(data: JSONObject, fallbackMainId: String): TaskSetData {
+    private fun parseTaskSet(
+        data: JSONObject,
+        cid: String,
+        fallbackMainId: String
+    ): TaskSetData {
         val notify = data.optJSONObject("notify") ?: JSONObject()
         val tasksJson = data.optJSONArray("tasks") ?: JSONArray()
         val tasks = buildList {
@@ -281,6 +297,29 @@ object TaskSetApi {
                 val startAt = parseTimestamp(task.opt("start"))
                 val endAt = parseTimestamp(task.opt("end"))
                 val feedbacksJson = task.optJSONArray("feedback") ?: JSONArray()
+                val classFeedbackInfo = task.optJSONObject("feedback_info")
+                    ?.optJSONArray(cid)
+                    ?: task.optJSONObject("feedback_info")?.let { info ->
+                        val keys = info.keys()
+                        var selected: JSONArray? = null
+                        while (keys.hasNext() && selected == null) {
+                            selected = info.optJSONArray(keys.next())
+                        }
+                        selected
+                    }
+                    ?: JSONArray()
+                val memberStatuses = linkedMapOf<String, Int>()
+                val memberAcceptIds = linkedMapOf<String, String>()
+                for (feedbackIndex in 0 until classFeedbackInfo.length()) {
+                    val memberFeedback = classFeedbackInfo.optJSONObject(feedbackIndex)
+                        ?: continue
+                    val memberId = memberFeedback.optString("mid")
+                    if (memberId.isBlank()) continue
+                    memberStatuses[memberId] = memberFeedback.optInt("status", 0)
+                    memberFeedback.optString("aid")
+                        .takeIf { it.isNotBlank() }
+                        ?.let { memberAcceptIds[memberId] = it }
+                }
                 val feedbacks = buildList {
                     for (feedbackIndex in 0 until feedbacksJson.length()) {
                         val feedback = feedbacksJson.optJSONObject(feedbackIndex) ?: continue
@@ -308,7 +347,9 @@ object TaskSetApi {
                         endLabel = formatTimestamp(endAt),
                         status = task.optInt("status", 0),
                         media = extractSubmissionMedia(task),
-                        feedbacks = feedbacks
+                        feedbacks = feedbacks,
+                        memberStatuses = memberStatuses,
+                        memberAcceptIds = memberAcceptIds
                     )
                 )
             }
@@ -329,6 +370,7 @@ object TaskSetApi {
 
     private data class AcceptedFeedback(
         val answerPaperId: String,
+        val status: Int,
         val score: String?,
         val durationSeconds: Int?,
         val raw: JSONObject
@@ -351,6 +393,7 @@ object TaskSetApi {
                     sheetId,
                     AcceptedFeedback(
                         answerPaperId = answerPaperId,
+                        status = feedback.optInt("status", 0),
                         score = grade.takeIf { it >= 0 }?.toString(),
                         durationSeconds = duration.takeIf { it > 0 },
                         raw = feedback
@@ -385,6 +428,7 @@ object TaskSetApi {
             title = feedback.title,
             subTitle = feedback.subTitle,
             submitted = true,
+            status = accepted.status,
             score = accepted.score,
             durationSeconds = accepted.durationSeconds,
             media = media,
@@ -429,6 +473,14 @@ object TaskSetApi {
         path: String,
         body: JSONObject
     ): JSONObject {
+        val cacheIdentity = "$token|$path|${body}"
+        ApiCache.read(
+            namespace = "tasks",
+            identity = cacheIdentity,
+            maxAgeMillis = 90_000L
+        )?.let { cached ->
+            return JSONObject(cached)
+        }
         val request = Request.Builder()
             .url("$BASE_URL$path")
             .post(body.toString().toRequestBody(jsonMedia))
@@ -443,6 +495,7 @@ object TaskSetApi {
             if (envelope.optInt("code", -1) != 0) {
                 throw Exception(envelope.optString("msg", "请求任务数据失败"))
             }
+            ApiCache.write("tasks", cacheIdentity, responseBody)
             return envelope
         }
     }
@@ -488,13 +541,12 @@ object TaskSetApi {
         if (cleanPath.isBlank()) return null
         val kind = mediaKind(cleanPath)
         val url = when {
-            cleanPath.startsWith("http://") || cleanPath.startsWith("https://") -> cleanPath
-            cleanPath.contains("_cos/") -> COS_URL + cleanPath
-            cleanPath.contains("_oss/") -> OSS_URL + cleanPath
-            cleanPath.contains("_tos/") && kind == SubmissionMediaKind.VIDEO -> {
-                TOS_VIDEO_URL + cleanPath
+            cleanPath.startsWith("http://") || cleanPath.startsWith("https://") -> {
+                normalizeKnownMediaUrl(cleanPath, kind)
             }
-            cleanPath.contains("_tos/") -> TOS_RECORD_URL + cleanPath
+            cleanPath.contains("_cos/") -> storageUrl(kind, "_cos") + cleanPath
+            cleanPath.contains("_oss/") -> storageUrl(kind, "_oss") + cleanPath
+            cleanPath.contains("_tos/") -> storageUrl(kind, "_tos") + cleanPath
             else -> return null
         }
         return SubmissionMedia(
@@ -513,11 +565,57 @@ object TaskSetApi {
             extension in IMAGE_EXTENSIONS -> SubmissionMediaKind.IMAGE
             extension in VIDEO_EXTENSIONS -> SubmissionMediaKind.VIDEO
             extension in AUDIO_EXTENSIONS -> SubmissionMediaKind.AUDIO
+            path.contains("/app_video/") -> SubmissionMediaKind.VIDEO
+            path.contains("/app_image/") -> SubmissionMediaKind.IMAGE
+            path.contains("/app_record/") -> SubmissionMediaKind.AUDIO
             path.startsWith("_cos/") -> SubmissionMediaKind.IMAGE
             path.startsWith("_oss/") -> SubmissionMediaKind.VIDEO
             path.startsWith("_tos/") -> SubmissionMediaKind.AUDIO
             else -> SubmissionMediaKind.FILE
         }
+    }
+
+    private fun storageUrl(
+        kind: SubmissionMediaKind,
+        prefix: String
+    ): String {
+        return when (prefix) {
+            "_cos" -> when (kind) {
+                SubmissionMediaKind.IMAGE -> COS_IMAGE_URL
+                SubmissionMediaKind.VIDEO -> COS_VIDEO_URL
+                SubmissionMediaKind.AUDIO -> COS_AUDIO_URL
+                SubmissionMediaKind.FILE -> COS_FILE_URL
+            }
+            "_oss" -> when (kind) {
+                SubmissionMediaKind.IMAGE -> OSS_IMAGE_URL
+                SubmissionMediaKind.VIDEO -> OSS_VIDEO_URL
+                SubmissionMediaKind.AUDIO -> OSS_AUDIO_URL
+                SubmissionMediaKind.FILE -> OSS_FILE_URL
+            }
+            else -> when (kind) {
+                SubmissionMediaKind.IMAGE -> TOS_IMAGE_URL
+                SubmissionMediaKind.VIDEO -> TOS_VIDEO_URL
+                SubmissionMediaKind.AUDIO -> TOS_AUDIO_URL
+                SubmissionMediaKind.FILE -> TOS_FILE_URL
+            }
+        }
+    }
+
+    private fun normalizeKnownMediaUrl(
+        url: String,
+        kind: SubmissionMediaKind
+    ): String {
+        val legacy = KNOWN_MEDIA_HOSTS.firstOrNull {
+            url.startsWith(it)
+        } ?: return url
+        val relative = url.removePrefix(legacy)
+        val prefix = when {
+            relative.startsWith("_cos/") -> "_cos"
+            relative.startsWith("_oss/") -> "_oss"
+            relative.startsWith("_tos/") -> "_tos"
+            else -> return url
+        }
+        return storageUrl(kind, prefix) + relative
     }
 
     private fun parseTimestamp(value: Any?): Long {
@@ -570,8 +668,25 @@ object TaskSetApi {
     private val MEDIA_PATH_REGEX = Regex(
         """([^\s"'<>]*(?:_oss|_cos|_tos)/[^\s"'<>]+)"""
     )
+    private val KNOWN_MEDIA_HOSTS = listOf(
+        "https://img-1302562365.cos.ap-beijing.myqcloud.com/",
+        "https://campusvideo.oss-cn-beijing.aliyuncs.com/",
+        "https://img.banjixiaoguanjia.com/",
+        "https://video.banjixiaoguanjia.com/",
+        "https://record.banjixiaoguanjia.com/",
+        "https://file.banjixiaoguanjia.com/",
+        "https://img.welife001.com/",
+        "https://video.welife001.com/",
+        "https://record.welife001.com/",
+        "https://file.welife001.com/",
+        "https://tosimg.banjixiaoguanjia.com/",
+        "https://tosvideo.banjixiaoguanjia.com/",
+        "https://tosrecord.banjixiaoguanjia.com/",
+        "https://tosfile.banjixiaoguanjia.com/"
+    )
     private val MEDIA_URL_REGEX = Regex(
-        """https?://(?:campusvideo\.oss-cn-beijing\.aliyuncs\.com|img-1302562365\.cos\.ap-beijing\.myqcloud\.com|tosrecord\.banjixiaoguanjia\.com|tosvideo\.banjixiaoguanjia\.com)/[^\s"'<>]+"""
+        """https?://(?:img|video|record|file|album|tosimg|tosvideo|tosrecord|tosfile)\.(?:welife001|banjixiaoguanjia)\.com/[^\s"'<>]+""" +
+            """|https?://(?:campusvideo\.oss-cn-beijing\.aliyuncs\.com|img-1302562365\.cos\.ap-beijing\.myqcloud\.com)/[^\s"'<>]+"""
     )
     private val IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "webp", "gif", "heic", "heif", "bmp")
     private val VIDEO_EXTENSIONS = setOf("mp4", "mov", "webm", "m3u8", "3gp", "mkv")

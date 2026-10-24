@@ -1,7 +1,10 @@
 package com.daijunhao.classroommanager.ui
 
+import android.content.Context
+import android.content.Intent
 import android.media.AudioAttributes
 import android.media.MediaPlayer
+import android.net.Uri
 import android.widget.MediaController
 import android.widget.Toast
 import android.widget.VideoView
@@ -24,6 +27,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Button
@@ -130,6 +134,10 @@ private fun ImageViewer(
             onDismiss = onDismiss,
             modifier = Modifier.align(Alignment.TopEnd)
         )
+        BrowserOpenButton(
+            media = media,
+            modifier = Modifier.align(Alignment.TopStart)
+        )
         Text(
             text = "双指缩放 · ${media.name}",
             color = Color.White,
@@ -189,6 +197,10 @@ private fun VideoViewer(
         CloseButton(
             onDismiss = onDismiss,
             modifier = Modifier.align(Alignment.TopEnd)
+        )
+        BrowserOpenButton(
+            media = media,
+            modifier = Modifier.align(Alignment.TopStart)
         )
     }
 }
@@ -367,6 +379,16 @@ private fun AudioViewer(
                         }
                     }
                 }
+                if (canOpenInBrowser(media.url)) {
+                    Spacer(Modifier.height(10.dp))
+                    TextButton(onClick = {
+                        openInBrowser(context, media.url)
+                    }) {
+                        Icon(Icons.Default.OpenInBrowser, contentDescription = null)
+                        Spacer(Modifier.width(6.dp))
+                        Text("在浏览器中打开")
+                    }
+                }
             }
         }
         CloseButton(
@@ -381,6 +403,7 @@ private fun UnsupportedViewer(
     media: SubmissionMedia,
     onDismiss: () -> Unit
 ) {
+    val context = LocalContext.current
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -399,6 +422,13 @@ private fun UnsupportedViewer(
                 Spacer(Modifier.height(16.dp))
                 Button(onClick = onDismiss) {
                     Text("关闭")
+                }
+                if (canOpenInBrowser(media.url)) {
+                    TextButton(onClick = {
+                        openInBrowser(context, media.url)
+                    }) {
+                        Text("在浏览器中打开")
+                    }
                 }
             }
         }
@@ -432,6 +462,7 @@ fun SubmissionMediaPreview(
     modifier: Modifier = Modifier,
     imageHeight: Dp = 180.dp
 ) {
+    val context = LocalContext.current
     when (media.kind) {
         SubmissionMediaKind.IMAGE -> {
             Column(modifier = modifier) {
@@ -445,42 +476,122 @@ fun SubmissionMediaPreview(
                         .clip(RoundedCornerShape(8.dp))
                         .clickable { onOpen(media) }
                 )
-                Text(
-                    text = media.name,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = media.name,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                    if (canOpenInBrowser(media.url)) {
+                        TextButton(onClick = {
+                            openInBrowser(context, media.url)
+                        }) {
+                            Text("浏览器打开")
+                        }
+                    }
+                }
             }
         }
 
         SubmissionMediaKind.VIDEO -> {
-            OutlinedButton(
-                onClick = { onOpen(media) },
-                modifier = modifier.fillMaxWidth()
-            ) {
-                Text("播放视频：${media.name}")
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedButton(
+                    onClick = { onOpen(media) },
+                    modifier = modifier.weight(1f)
+                ) {
+                    Text("播放视频：${media.name}")
+                }
+                if (canOpenInBrowser(media.url)) {
+                    TextButton(onClick = {
+                        openInBrowser(context, media.url)
+                    }) {
+                        Text("浏览器打开")
+                    }
+                }
             }
         }
 
         SubmissionMediaKind.AUDIO -> {
-            OutlinedButton(
-                onClick = { onOpen(media) },
-                modifier = modifier.fillMaxWidth()
-            ) {
-                Text("播放录音：${media.name}")
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedButton(
+                    onClick = { onOpen(media) },
+                    modifier = modifier.weight(1f)
+                ) {
+                    Text("播放录音：${media.name}")
+                }
+                if (canOpenInBrowser(media.url)) {
+                    TextButton(onClick = {
+                        openInBrowser(context, media.url)
+                    }) {
+                        Text("浏览器打开")
+                    }
+                }
             }
         }
 
         SubmissionMediaKind.FILE -> {
-            OutlinedButton(
-                onClick = { onOpen(media) },
-                modifier = modifier.fillMaxWidth()
-            ) {
-                Text("打开文件：${media.name}")
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedButton(
+                    onClick = { onOpen(media) },
+                    modifier = modifier.weight(1f)
+                ) {
+                    Text("打开文件：${media.name}")
+                }
+                if (canOpenInBrowser(media.url)) {
+                    TextButton(onClick = {
+                        openInBrowser(context, media.url)
+                    }) {
+                        Text("浏览器打开")
+                    }
+                }
             }
         }
+    }
+}
+
+@Composable
+private fun BrowserOpenButton(
+    media: SubmissionMedia,
+    modifier: Modifier = Modifier
+) {
+    if (!canOpenInBrowser(media.url)) return
+    val context = LocalContext.current
+    Surface(
+        color = Color.Black.copy(alpha = 0.55f),
+        shape = CircleShape,
+        modifier = modifier.statusBarsPadding().padding(16.dp)
+    ) {
+        IconButton(onClick = { openInBrowser(context, media.url) }) {
+            Icon(
+                Icons.Default.OpenInBrowser,
+                contentDescription = "在浏览器中打开",
+                tint = Color.White
+            )
+        }
+    }
+}
+
+internal fun canOpenInBrowser(url: String): Boolean {
+    return url.startsWith("http://") || url.startsWith("https://")
+}
+
+internal fun openInBrowser(context: Context, url: String) {
+    if (!canOpenInBrowser(url)) return
+    runCatching {
+        context.startActivity(
+            Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                addCategory(Intent.CATEGORY_BROWSABLE)
+            }
+        )
+    }.onFailure {
+        Toast.makeText(
+            context,
+            "没有可用的浏览器：${it.message}",
+            Toast.LENGTH_SHORT
+        ).show()
     }
 }
 

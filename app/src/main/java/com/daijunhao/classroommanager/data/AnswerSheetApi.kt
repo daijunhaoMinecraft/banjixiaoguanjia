@@ -243,6 +243,7 @@ object AnswerSheetApi {
                     }
                     val code = envelope.optInt("code", -1)
                     if (code == 0) {
+                        ApiCache.clearNamespace("tasks")
                         return@withContext Result.success(Unit)
                     }
                     lastError = Exception(envelope.optString("msg", "提交答题卷失败"))
@@ -292,6 +293,7 @@ object AnswerSheetApi {
                 }
                 val envelope = runCatching { JSONObject(body) }.getOrNull()
                 if (envelope == null || envelope.optInt("code", -1) == 0) {
+                    ApiCache.clearNamespace("tasks")
                     return@withContext Result.success(Unit)
                 }
                 Result.failure(

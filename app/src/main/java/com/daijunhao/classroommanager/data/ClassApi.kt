@@ -25,6 +25,7 @@ data class ClassInfo(
 data class MemberInfo(
     val id: String,
     val name: String,
+    val studentNumber: Int,
     val phone: String?, // 手机号可能为空
     val avatar: String,
     val wxName: String
@@ -46,6 +47,12 @@ object ClassApi {
     suspend fun getClassList(token: String, memberId: String): Result<List<ClassInfo>> = withContext(Dispatchers.IO) {
         try {
             val body = JSONObject().put("member_ids", JSONArray().put(memberId)).toString().toRequestBody(jsonMedia)
+            val cacheIdentity = "$token|$memberId"
+            val cachedBody = ApiCache.read(
+                namespace = "classes",
+                identity = cacheIdentity,
+                maxAgeMillis = 10 * 60_000L
+            )
 
             // 构造请求（还原 APP 端常见的 Headers，Token 放在 Authorization 里）
             val request = Request.Builder()
@@ -58,11 +65,15 @@ object ClassApi {
                 .header("Other-info", "${System.currentTimeMillis()}/${UUID.randomUUID().toString().replace("-", "")}")
                 .build()
 
-            client.newCall(request).execute().use { response ->
-                val resBody = response.body?.string().orEmpty()
-                val json = JSONObject(resBody)
+            val resBody = cachedBody ?: client.newCall(request).execute().use { response ->
+                response.body?.string().orEmpty()
+            }
+            if (cachedBody == null && resBody.isNotBlank()) {
+                ApiCache.write("classes", cacheIdentity, resBody)
+            }
+            val json = JSONObject(resBody)
 
-                if (json.optInt("code") == 0) {
+            if (json.optInt("code") == 0) {
                     val dataArr = json.optJSONArray("data") ?: JSONArray()
                     val list = mutableListOf<ClassInfo>()
                     for (i in 0 until dataArr.length()) {
@@ -82,9 +93,8 @@ object ClassApi {
                         )
                     }
                     Result.success(list)
-                } else {
-                    Result.failure(Exception(json.optString("msg", "获取班级失败")))
-                }
+            } else {
+                Result.failure(Exception(json.optString("msg", "获取班级失败")))
             }
         } catch (e: Exception) {
             Result.failure(e)
@@ -98,6 +108,12 @@ object ClassApi {
                 put("updateclass", 1)
                 put("all_status", true)
             }.toString().toRequestBody(jsonMedia)
+            val cacheIdentity = "$token|$cid"
+            val cachedBody = ApiCache.read(
+                namespace = "members",
+                identity = cacheIdentity,
+                maxAgeMillis = 5 * 60_000L
+            )
 
             val request = Request.Builder()
                 .url("https://b.welife001.com/applet/getMembersByCid")
@@ -107,11 +123,15 @@ object ClassApi {
                 .header("Authorization", token)
                 .build()
 
-            client.newCall(request).execute().use { response ->
-                val resBody = response.body?.string().orEmpty()
-                val json = JSONObject(resBody)
+            val resBody = cachedBody ?: client.newCall(request).execute().use { response ->
+                response.body?.string().orEmpty()
+            }
+            if (cachedBody == null && resBody.isNotBlank()) {
+                ApiCache.write("members", cacheIdentity, resBody)
+            }
+            val json = JSONObject(resBody)
 
-                if (json.optInt("code") == 0) {
+            if (json.optInt("code") == 0) {
                     val membersArr = json.getJSONObject("data").optJSONArray("members") ?: JSONArray()
                     val list = mutableListOf<MemberInfo>()
                     for (i in 0 until membersArr.length()) {
@@ -120,6 +140,7 @@ object ClassApi {
                             MemberInfo(
                                 id = item.optString("_id", ""),
                                 name = item.optString("name", "未知姓名"),
+                                studentNumber = item.optInt("snum", Int.MAX_VALUE),
                                 phone = if (item.has("phone") && item.getString("phone").isNotBlank()) item.getString("phone") else null,
                                 avatar = item.optString("wx_avatar", ""),
                                 wxName = item.optString("wx_name", "未知微信昵称")
@@ -127,9 +148,8 @@ object ClassApi {
                         )
                     }
                     Result.success(list)
-                } else {
-                    Result.failure(Exception(json.optString("msg", "获取成员失败")))
-                }
+            } else {
+                Result.failure(Exception(json.optString("msg", "获取成员失败")))
             }
         } catch (e: Exception) {
             Result.failure(e)

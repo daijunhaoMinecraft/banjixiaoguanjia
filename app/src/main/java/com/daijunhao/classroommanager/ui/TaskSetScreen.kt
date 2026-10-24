@@ -71,9 +71,12 @@ fun TaskSetDetailScreen(
     notifyId: String,
     cid: String,
     relatedId: String,
+    targetMemberId: String? = null,
+    targetMemberName: String = "",
     refreshVersion: Int = 0,
     onBack: () -> Unit,
     onOpenRelated: (String) -> Unit,
+    onOpenClassAnalysis: () -> Unit = {},
     onOpenAnswerSheet: (
         mainId: String,
         notifyId: String,
@@ -85,6 +88,10 @@ fun TaskSetDetailScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val localMemberId = remember { TokenStore.readMemberId(context).orEmpty() }
+    val viewMemberId = targetMemberId?.takeIf { it.isNotBlank() }
+        ?: localMemberId
+    val isReadOnly = targetMemberId?.isNotBlank() == true
     val historyStates = remember(mainId) {
         mutableStateMapOf<String, HistoryUiState>()
     }
@@ -95,10 +102,9 @@ fun TaskSetDetailScreen(
     var reloadVersion by remember(mainId) { mutableIntStateOf(0) }
     var selectedMedia by remember(mainId) { mutableStateOf<SubmissionMedia?>(null) }
 
-    LaunchedEffect(mainId, cid, reloadVersion, refreshVersion) {
+    LaunchedEffect(mainId, cid, viewMemberId, reloadVersion, refreshVersion) {
         val token = TokenStore.readToken(context)
-        val memberId = TokenStore.readMemberId(context)
-        if (token.isNullOrBlank() || memberId.isNullOrBlank()) {
+        if (token.isNullOrBlank() || viewMemberId.isBlank()) {
             error = "登录凭证失效，请重新登录"
             loading = false
             return@LaunchedEffect
@@ -106,7 +112,7 @@ fun TaskSetDetailScreen(
         loading = true
         TaskSetApi.getTaskSet(
             token = token,
-            memberId = memberId,
+            memberId = viewMemberId,
             cid = cid,
             mainId = mainId
         ).onSuccess {
@@ -124,16 +130,19 @@ fun TaskSetDetailScreen(
         historyStates[task.id] = HistoryUiState(loading = true)
         scope.launch {
             val token = TokenStore.readToken(context)
-            val memberId = TokenStore.readMemberId(context)
             val currentTaskSet = taskSet
-            if (token.isNullOrBlank() || memberId.isNullOrBlank() || currentTaskSet == null) {
+            if (
+                token.isNullOrBlank() ||
+                viewMemberId.isBlank() ||
+                currentTaskSet == null
+            ) {
                 historyStates[task.id] = HistoryUiState(error = "登录凭证失效")
                 return@launch
             }
 
             TaskSetApi.getTaskHistory(
                 token = token,
-                memberId = memberId,
+                memberId = viewMemberId,
                 cid = cid,
                 mainId = mainId,
                 notifyId = currentTaskSet.notifyId.ifBlank { notifyId },
@@ -206,6 +215,47 @@ fun TaskSetDetailScreen(
                     item {
                         Spacer(Modifier.height(16.dp))
                         TaskSetHeader(current, onOpenMedia = ::openMedia)
+                        if (isReadOnly) {
+                            Spacer(Modifier.height(10.dp))
+                            Surface(
+                                color = MaterialTheme.colorScheme.tertiaryContainer,
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text(
+                                    text = "正在查看 ${targetMemberName.ifBlank { "该学生" }} 的任务，仅可浏览，不能代交。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier.padding(10.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    if (!isReadOnly) {
+                        item {
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.secondaryContainer
+                                )
+                            ) {
+                                Column(modifier = Modifier.padding(16.dp)) {
+                                    Text(
+                                        text = "全班完成分析",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Spacer(Modifier.height(6.dp))
+                                    Text(
+                                        text = "查看每位学生的任务状态，标记错误/需订正和未提交名单。",
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                    Spacer(Modifier.height(10.dp))
+                                    OutlinedButton(onClick = onOpenClassAnalysis) {
+                                        Text("查看全班情况")
+                                    }
+                                }
+                            }
+                        }
                     }
 
                     if (relatedId.isNotBlank() && relatedId != "-") {
@@ -229,18 +279,22 @@ fun TaskSetDetailScreen(
                     items(current.tasks, key = { it.id }) { task ->
                         TaskSetTaskCard(
                             task = task,
+                            viewMemberId = viewMemberId,
+                            readOnly = isReadOnly,
                             historyState = historyStates[task.id],
                             onLoadHistory = { loadHistory(task) },
                             onOpenMedia = ::openMedia,
                             onOpenAnswerSheet = { feedback ->
-                                onOpenAnswerSheet(
-                                    mainId,
-                                    current.notifyId.ifBlank { notifyId },
-                                    cid,
-                                    task.id,
-                                    feedback.type,
-                                    feedback.sheetId
-                                )
+                                if (!isReadOnly) {
+                                    onOpenAnswerSheet(
+                                        mainId,
+                                        current.notifyId.ifBlank { notifyId },
+                                        cid,
+                                        task.id,
+                                        feedback.type,
+                                        feedback.sheetId
+                                    )
+                                }
                             }
                         )
                     }
@@ -350,6 +404,8 @@ private fun RelatedTaskCard(onOpen: () -> Unit) {
 @Composable
 private fun TaskSetTaskCard(
     task: TaskSetTask,
+    viewMemberId: String,
+    readOnly: Boolean,
     historyState: HistoryUiState?,
     onLoadHistory: () -> Unit,
     onOpenMedia: (SubmissionMedia) -> Unit,
@@ -370,7 +426,11 @@ private fun TaskSetTaskCard(
                     modifier = Modifier.weight(1f)
                 )
                 Spacer(Modifier.width(8.dp))
-                StatusBadge(status = task.status)
+                val memberStatus = task.memberStatuses[viewMemberId]
+                StatusBadge(
+                    status = task.status,
+                    flagged = memberStatus != null && memberStatus < 0
+                )
             }
 
             Spacer(Modifier.height(6.dp))
@@ -404,6 +464,7 @@ private fun TaskSetTaskCard(
                 FeedbackSummaryRow(
                     feedback = feedback,
                     enabled = historyState?.loading != true,
+                    readOnly = readOnly,
                     onAnswer = { onOpenAnswerSheet(feedback) }
                 )
                 Spacer(Modifier.height(6.dp))
@@ -472,10 +533,12 @@ private fun TaskSetTaskCard(
 }
 
 @Composable
-private fun StatusBadge(status: Int) {
+private fun StatusBadge(status: Int, flagged: Boolean = false) {
     val completed = status == 3
     Surface(
-        color = if (completed) {
+        color = if (flagged) {
+            MaterialTheme.colorScheme.errorContainer
+        } else if (completed) {
             MaterialTheme.colorScheme.primary
         } else {
             MaterialTheme.colorScheme.secondaryContainer
@@ -483,8 +546,14 @@ private fun StatusBadge(status: Int) {
         shape = RoundedCornerShape(4.dp)
     ) {
         Text(
-            text = if (completed) "已完成" else "未完成",
-            color = if (completed) {
+            text = when {
+                flagged -> "错误/需订正"
+                completed -> "已完成"
+                else -> "未完成"
+            },
+            color = if (flagged) {
+                MaterialTheme.colorScheme.onErrorContainer
+            } else if (completed) {
                 MaterialTheme.colorScheme.onPrimary
             } else {
                 MaterialTheme.colorScheme.onSecondaryContainer
@@ -499,6 +568,7 @@ private fun StatusBadge(status: Int) {
 private fun FeedbackSummaryRow(
     feedback: TaskFeedbackSummary,
     enabled: Boolean,
+    readOnly: Boolean,
     onAnswer: () -> Unit
 ) {
     Row(
@@ -532,8 +602,8 @@ private fun FeedbackSummaryRow(
                 )
             }
         }
-        TextButton(onClick = onAnswer, enabled = enabled) {
-            Text("作答")
+        TextButton(onClick = onAnswer, enabled = enabled && !readOnly) {
+            Text(if (readOnly) "只读" else "作答")
         }
     }
 }
@@ -569,6 +639,15 @@ private fun FeedbackHistoryCard(
             }
 
             if (history.submitted) {
+                if (history.status != null && history.status < 0) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = "状态：错误 / 需订正",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.error,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
                 val details = buildList {
                     history.score?.let { add("得分 $it") }
                     history.durationSeconds?.let { add("用时 ${it}s") }
