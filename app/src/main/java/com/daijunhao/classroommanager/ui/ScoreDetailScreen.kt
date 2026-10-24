@@ -542,6 +542,7 @@ private fun ScoreResultCard(data: ScoreResultData) {
     val scoreMap = remember(data.scores) {
         data.scores.associate { it.subject to it.score }
     }
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
@@ -572,13 +573,32 @@ private fun ScoreResultCard(data: ScoreResultData) {
                 )
             }
 
-            val highlights = listOf(
-                "总分折后" to "总分",
-                "班排" to "班级排名",
-                "段排" to "段排名"
-            ).mapNotNull { (subject, label) ->
-                scoreMap[subject]?.let { label to it }
+            // ================= 新增的正则匹配逻辑 =================
+            val highlights = remember(scoreMap) {
+                // 定义正则规则与对应的展示文案
+                val rules = listOf(
+                    // 匹配: 总分, 总分折后, 折后总分, 原始总分, 总成绩 等
+                    Regex("^(?:原始|折后|赋分)?总分(?:折后)?$|^总成绩$") to "总分",
+
+                    // 匹配: 班排, 班级排名, 班次, 班名次, 班级名次 (排除"语文班排"这种前缀)
+                    Regex("^班级?(?:排名|名次|排|次)$") to "班级排名",
+
+                    // 匹配: 段排, 年级排名, 校排, 级次, 段次 等
+                    Regex("^(?:段|年级|校|级)(?:排名|名次|排|次)$") to "段排名"
+                )
+
+                rules.mapNotNull { (regex, label) ->
+                    // 在 scoreMap 的 key 中寻找第一个符合正则的字段
+                    val matchedKey = scoreMap.keys.firstOrNull { it.matches(regex) }
+                    if (matchedKey != null) {
+                        label to scoreMap[matchedKey]!!
+                    } else {
+                        null
+                    }
+                }
             }
+            // ===================================================
+
             if (highlights.isNotEmpty()) {
                 Spacer(Modifier.height(14.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {

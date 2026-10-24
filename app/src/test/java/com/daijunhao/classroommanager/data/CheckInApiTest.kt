@@ -33,4 +33,28 @@ class CheckInApiTest {
             key
         )
     }
+
+    @Test
+    fun calculatesUploadProgressFraction() {
+        val progress = UploadProgress(
+            uploadedBytes = 512,
+            totalBytes = 2048,
+            bytesPerSecond = 1024,
+            remainingMillis = 1500
+        )
+
+        assertEquals(0.25f, progress.fraction, 0.0001f)
+    }
+
+    @Test
+    fun clampsUploadProgressFraction() {
+        val progress = UploadProgress(
+            uploadedBytes = 4096,
+            totalBytes = 2048,
+            bytesPerSecond = 0,
+            remainingMillis = null
+        )
+
+        assertEquals(1f, progress.fraction, 0f)
+    }
 }

@@ -137,6 +137,21 @@ data class LocalMedia(
     val uploadType: CheckInUploadType
 )
 
+data class UploadProgress(
+    val uploadedBytes: Long,
+    val totalBytes: Long,
+    val bytesPerSecond: Long,
+    val remainingMillis: Long?
+) {
+    val fraction: Float
+        get() {
+            if (totalBytes <= 0) return 0f
+            return (uploadedBytes.toDouble() / totalBytes)
+                .toFloat()
+                .coerceIn(0f, 1f)
+        }
+}
+
 enum class CheckInSubmitType(val value: String) {
     DRAFT("draft"),
     SUBMIT("submit")
@@ -396,7 +411,7 @@ object CheckInApi {
         credentials: UploadCredentials,
         memberId: String,
         media: LocalMedia,
-        onProgress: (Float) -> Unit = {}
+        onProgress: (UploadProgress) -> Unit = {}
     ): Result<CheckInFile> = withContext(Dispatchers.IO) {
         try {
             if (credentials.uploadType != media.uploadType) {
@@ -953,7 +968,7 @@ object CheckInApi {
         private val uri: Uri,
         private val mediaType: MediaType?,
         private val declaredLength: Long,
-        private val onProgress: (Float) -> Unit
+        private val onProgress: (UploadProgress) -> Unit
     ) : RequestBody() {
         override fun contentType(): MediaType? = mediaType
 
@@ -965,21 +980,51 @@ object CheckInApi {
             input.use {
                 val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
                 var uploaded = 0L
-                var lastPercent = -1
+                val startedAtNanos = System.nanoTime()
+                var lastCallbackAtNanos = 0L
+                val totalBytes = declaredLength.coerceAtLeast(0L)
+
+                fun emitProgress(force: Boolean) {
+                    val now = System.nanoTime()
+                    if (!force &&
+                        now - lastCallbackAtNanos < 100_000_000L
+                    ) {
+                        return
+                    }
+                    lastCallbackAtNanos = now
+                    val elapsedSeconds = (
+                        (now - startedAtNanos).coerceAtLeast(1L) /
+                            1_000_000_000.0
+                        )
+                    val speed = (uploaded / elapsedSeconds)
+                        .toLong()
+                        .coerceAtLeast(0L)
+                    val remainingMillis = if (
+                        totalBytes > uploaded &&
+                        speed > 0
+                    ) {
+                        (totalBytes - uploaded) * 1000L / speed
+                    } else {
+                        null
+                    }
+                    onProgress(
+                        UploadProgress(
+                            uploadedBytes = uploaded,
+                            totalBytes = totalBytes,
+                            bytesPerSecond = speed,
+                            remainingMillis = remainingMillis
+                        )
+                    )
+                }
+
                 while (true) {
                     val read = it.read(buffer)
-                    if (read == -1) break
+                    if (read < 0) break
                     sink.write(buffer, 0, read)
                     uploaded += read
-                    if (contentLength() > 0) {
-                        val percent = ((uploaded * 100) / contentLength()).toInt()
-                        if (percent != lastPercent) {
-                            lastPercent = percent
-                            onProgress((percent / 100f).coerceIn(0f, 1f))
-                        }
-                    }
+                    emitProgress(force = false)
                 }
-                onProgress(1f)
+                emitProgress(force = true)
             }
         }
     }

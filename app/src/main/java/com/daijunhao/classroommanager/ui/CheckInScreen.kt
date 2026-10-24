@@ -65,25 +65,38 @@ import com.daijunhao.classroommanager.data.CheckInFile
 import com.daijunhao.classroommanager.data.CheckInItem
 import com.daijunhao.classroommanager.data.CheckInSubmitType
 import com.daijunhao.classroommanager.data.CheckInUploadType
+import com.daijunhao.classroommanager.data.AppSettings
 import com.daijunhao.classroommanager.data.LocalMedia
 import com.daijunhao.classroommanager.data.SubmissionMedia
 import com.daijunhao.classroommanager.data.SubmissionMediaKind
 import com.daijunhao.classroommanager.data.TaskSetApi
 import com.daijunhao.classroommanager.data.TokenStore
+import com.daijunhao.classroommanager.data.UploadProgress
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import java.io.File
 import java.util.Locale
 import java.util.UUID
+import kotlin.math.roundToInt
 
 private data class PendingFile(
     val localId: String,
     val media: LocalMedia,
-    val progress: Float? = null,
+    val uploadProgress: UploadProgress? = null,
+    val uploadState: PendingUploadState = PendingUploadState.WAITING,
     val error: String? = null
 )
+
+private enum class PendingUploadState {
+    WAITING,
+    UPLOADING,
+    COMPLETED,
+    FAILED
+}
 
 private data class ItemEditorState(
     val savedFiles: List<CheckInFile> = emptyList(),
@@ -118,6 +131,7 @@ fun CheckInDetailScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val uploadOptions = remember { AppSettings.readUploadOptions(context) }
     val localMemberId = remember { TokenStore.readMemberId(context).orEmpty() }
     val viewMemberId = targetMemberId?.takeIf { it.isNotBlank() }
         ?: localMemberId
@@ -366,10 +380,19 @@ fun CheckInDetailScreen(
 
             try {
                 if (pendingUploads.isNotEmpty()) {
-                    busyText = "正在并行上传 ${pendingUploads.size} 个文件..."
+                    busyText = "正在准备上传 ${pendingUploads.size} 个文件..."
                     pendingUploads.forEach { entry ->
                         updatePendingFile(entry.itemId, entry.pending.localId) {
-                            it.copy(progress = 0f, error = null)
+                            it.copy(
+                                uploadProgress = UploadProgress(
+                                    uploadedBytes = 0,
+                                    totalBytes = it.media.size.coerceAtLeast(0),
+                                    bytesPerSecond = 0,
+                                    remainingMillis = null
+                                ),
+                                uploadState = PendingUploadState.WAITING,
+                                error = null
+                            )
                         }
                     }
 
@@ -390,7 +413,20 @@ fun CheckInDetailScreen(
                         result.exceptionOrNull()?.let { type to (it.message ?: "获取上传凭据失败") }
                     }.toMap()
 
-                    val failures = coroutineScope {
+                    val currentUploadOptions = AppSettings.readUploadOptions(context)
+                    val concurrency = if (currentUploadOptions.parallelUploads) {
+                        currentUploadOptions.maxConcurrentUploads.coerceIn(2, 5)
+                    } else {
+                        1
+                    }
+                    busyText = if (currentUploadOptions.parallelUploads) {
+                        "正在并行上传 ${pendingUploads.size} 个文件" +
+                            "（最多 $concurrency 个同时）..."
+                    } else {
+                        "正在按顺序上传 ${pendingUploads.size} 个文件..."
+                    }
+                    val uploadSemaphore = Semaphore(concurrency)
+                    val uploadResults = coroutineScope {
                         pendingUploads.map { entry ->
                             async {
                                 val uploadType = entry.pending.media.uploadType
@@ -403,36 +439,47 @@ fun CheckInDetailScreen(
                                         )
                                     )
                                 } else {
-                                    CheckInApi.uploadMedia(
-                                        context = context,
-                                        credentials = credentials,
-                                        memberId = viewMemberId,
-                                        media = entry.pending.media,
-                                        onProgress = { progress ->
-                                            scope.launch {
-                                                updatePendingFile(
-                                                    entry.itemId,
-                                                    entry.pending.localId
-                                                ) {
-                                                    it.copy(progress = progress)
+                                    uploadSemaphore.withPermit {
+                                        updatePendingFile(
+                                            entry.itemId,
+                                            entry.pending.localId
+                                        ) {
+                                            it.copy(
+                                                uploadState = PendingUploadState.UPLOADING,
+                                                error = null
+                                            )
+                                        }
+                                        CheckInApi.uploadMedia(
+                                            context = context,
+                                            credentials = credentials,
+                                            memberId = viewMemberId,
+                                            media = entry.pending.media,
+                                            onProgress = { progress ->
+                                                scope.launch {
+                                                    updatePendingFile(
+                                                        entry.itemId,
+                                                        entry.pending.localId
+                                                    ) {
+                                                        it.copy(
+                                                            uploadProgress = progress
+                                                        )
+                                                    }
                                                 }
                                             }
-                                        }
-                                    )
+                                        )
+                                    }
                                 }
 
                                 if (result.isSuccess) {
-                                    val uploaded = result.getOrThrow()
-                                    val current = itemStates[entry.itemId]
-                                        ?: ItemEditorState()
-                                    itemStates[entry.itemId] = current.copy(
-                                        savedFiles = (current.savedFiles + uploaded)
-                                            .distinctBy { it.objectKey },
-                                        pendingFiles = current.pendingFiles.filterNot {
-                                            it.localId == entry.pending.localId
-                                        }
-                                    )
-                                    null
+                                    updatePendingFile(
+                                        entry.itemId,
+                                        entry.pending.localId
+                                    ) {
+                                        it.copy(
+                                            uploadState = PendingUploadState.COMPLETED,
+                                            error = null
+                                        )
+                                    }
                                 } else {
                                     val message = result.exceptionOrNull()?.message
                                         ?: "上传失败"
@@ -440,19 +487,42 @@ fun CheckInDetailScreen(
                                         entry.itemId,
                                         entry.pending.localId
                                     ) {
-                                        it.copy(progress = null, error = message)
+                                        it.copy(
+                                            uploadState = PendingUploadState.FAILED,
+                                            error = message
+                                        )
                                     }
-                                    UploadFailure(entry.pending.media.name, message)
                                 }
+                                entry to result
                             }
                         }.awaitAll()
-                    }.filterNotNull()
+                    }
 
-                    if (failures.isNotEmpty()) {
-                        val first = failures.first()
+                    var failure: UploadFailure? = null
+                    uploadResults.forEach { (entry, result) ->
+                        if (result.isSuccess) {
+                            val uploaded = result.getOrThrow()
+                            val current = itemStates[entry.itemId]
+                                ?: ItemEditorState()
+                            itemStates[entry.itemId] = current.copy(
+                                savedFiles = (current.savedFiles + uploaded)
+                                    .distinctBy { it.objectKey },
+                                pendingFiles = current.pendingFiles.filterNot {
+                                    it.localId == entry.pending.localId
+                                }
+                            )
+                        } else if (failure == null) {
+                            failure = UploadFailure(
+                                entry.pending.media.name,
+                                result.exceptionOrNull()?.message ?: "上传失败"
+                            )
+                        }
+                    }
+
+                    failure?.let { first ->
                         Toast.makeText(
                             context,
-                            "${failures.size} 个文件上传失败：${first.fileName} ${first.message}",
+                            "部分文件上传失败：${first.fileName} ${first.message}",
                             Toast.LENGTH_LONG
                         ).show()
                         return@launch
@@ -661,6 +731,7 @@ fun CheckInDetailScreen(
                             editor = editor,
                             enabled = !isBusy,
                             readOnly = isReadOnly,
+                            showDetailedProgress = uploadOptions.showDetailedProgress,
                             onPickVideo = {
                                 pickerRequest = MediaPickerRequest(
                                     item.id,
@@ -867,6 +938,7 @@ private fun CheckInItemCard(
     editor: ItemEditorState,
     enabled: Boolean,
     readOnly: Boolean,
+    showDetailedProgress: Boolean,
     onPickVideo: () -> Unit,
     onPickImage: () -> Unit,
     onRecordVideo: () -> Unit,
@@ -940,6 +1012,7 @@ private fun CheckInItemCard(
                 PendingFileRow(
                     pending = pending,
                     enabled = enabled && !readOnly,
+                    showDetailedProgress = showDetailedProgress,
                     onDelete = { onRemovePendingFile(pending) }
                 )
             }
@@ -1097,6 +1170,7 @@ private fun SavedFileRow(
 private fun PendingFileRow(
     pending: PendingFile,
     enabled: Boolean,
+    showDetailedProgress: Boolean,
     onDelete: () -> Unit
 ) {
     Surface(
@@ -1116,7 +1190,16 @@ private fun PendingFileRow(
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        text = "待上传 · ${formatBytes(pending.media.size)}",
+                        text = when (pending.uploadState) {
+                            PendingUploadState.WAITING ->
+                                "等待上传 · ${formatBytes(pending.media.size)}"
+                            PendingUploadState.UPLOADING ->
+                                "正在上传 · ${formatBytes(pending.media.size)}"
+                            PendingUploadState.COMPLETED ->
+                                "上传完成，等待按顺序写入列表"
+                            PendingUploadState.FAILED ->
+                                "上传已暂停 · ${formatBytes(pending.media.size)}"
+                        },
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSecondaryContainer
                     )
@@ -1126,13 +1209,61 @@ private fun PendingFileRow(
                 }
             }
 
-            pending.progress?.let { progress ->
+            pending.uploadProgress?.let { progress ->
+                val totalBytes = progress.totalBytes
+                    .takeIf { it > 0 }
+                    ?: pending.media.size.coerceAtLeast(0)
+                val percent = (progress.fraction * 100).roundToInt()
                 LinearProgressIndicator(
-                    progress = { progress },
+                    progress = { progress.fraction },
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(end = 12.dp, top = 6.dp)
                 )
+                if (showDetailedProgress) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 4.dp, end = 12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "$percent%",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "${formatBytes(progress.uploadedBytes)} / " +
+                                formatBytes(totalBytes),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer
+                        )
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 2.dp, end = 12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "速度 ${formatUploadSpeed(progress.bytesPerSecond)}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer
+                        )
+                        Text(
+                            text = "剩余 ${formatRemainingTime(progress.remainingMillis)}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer
+                        )
+                    }
+                } else {
+                    Text(
+                        text = "$percent%",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(top = 4.dp, end = 12.dp)
+                    )
+                }
             }
 
             pending.error?.let { error ->
@@ -1167,4 +1298,21 @@ private fun formatBytes(bytes: Long): String {
     val mb = kb / 1024.0
     if (mb < 1024) return String.format(Locale.US, "%.1f MB", mb)
     return String.format(Locale.US, "%.2f GB", mb / 1024.0)
+}
+
+private fun formatUploadSpeed(bytesPerSecond: Long): String {
+    if (bytesPerSecond <= 0) return "计算中"
+    return "${formatBytes(bytesPerSecond)}/s"
+}
+
+private fun formatRemainingTime(milliseconds: Long?): String {
+    if (milliseconds == null || milliseconds <= 0) return "计算中"
+    val seconds = ((milliseconds + 999L) / 1000L).coerceAtLeast(1L)
+    if (seconds < 60) return "${seconds}秒"
+    val minutes = seconds / 60
+    val remainingSeconds = seconds % 60
+    if (minutes < 60) return "${minutes}分${remainingSeconds}秒"
+    val hours = minutes / 60
+    val remainingMinutes = minutes % 60
+    return "${hours}时${remainingMinutes}分"
 }

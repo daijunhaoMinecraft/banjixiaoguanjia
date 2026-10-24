@@ -49,6 +49,7 @@ import com.daijunhao.classroommanager.data.AccountProfile
 import com.daijunhao.classroommanager.data.ApiCache
 import com.daijunhao.classroommanager.data.AppSettings
 import com.daijunhao.classroommanager.data.DebugOptions
+import com.daijunhao.classroommanager.data.UploadOptions
 import coil.compose.AsyncImage
 import com.daijunhao.classroommanager.data.MemberInfo
 import androidx.compose.foundation.shape.CircleShape
@@ -65,6 +66,7 @@ import com.daijunhao.classroommanager.data.HomeApi
 import com.daijunhao.classroommanager.data.HomeItem
 import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.Arrangement
+import kotlin.math.roundToInt
 
 
 class MainActivity : ComponentActivity() {
@@ -593,6 +595,9 @@ fun MineScreen(onLogout: () -> Unit) {
     var debugOptions by remember {
         mutableStateOf(AppSettings.readDebugOptions(context))
     }
+    var uploadOptions by remember {
+        mutableStateOf(AppSettings.readUploadOptions(context))
+    }
     var cacheSize by remember { mutableStateOf(ApiCache.sizeBytes()) }
     var confirmForceSubmit by remember { mutableStateOf(false) }
     val versionName = remember {
@@ -605,6 +610,12 @@ fun MineScreen(onLogout: () -> Unit) {
         val updated = transform(debugOptions)
         debugOptions = updated
         AppSettings.saveDebugOptions(context, updated)
+    }
+
+    fun updateUploadOptions(transform: (UploadOptions) -> UploadOptions) {
+        val updated = transform(uploadOptions)
+        uploadOptions = updated
+        AppSettings.saveUploadOptions(context, updated)
     }
 
     LaunchedEffect(reloadVersion) {
@@ -744,6 +755,13 @@ fun MineScreen(onLogout: () -> Unit) {
                     }
                 }
             }
+        }
+
+        item {
+            UploadSettingsCard(
+                options = uploadOptions,
+                onChange = ::updateUploadOptions
+            )
         }
 
         item {
@@ -917,6 +935,116 @@ fun MineScreen(onLogout: () -> Unit) {
                     Text("取消")
                 }
             }
+        )
+    }
+}
+
+@Composable
+private fun UploadSettingsCard(
+    options: UploadOptions,
+    onChange: ((UploadOptions) -> UploadOptions) -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        )
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                text = "上传设置",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = "无论并行还是串行，最终都会按选择文件的原始顺序写入。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(8.dp))
+            UploadSwitchRow(
+                title = "并行上传",
+                description = "默认开启。关闭后文件会逐个上传。",
+                checked = options.parallelUploads,
+                onCheckedChange = { checked ->
+                    onChange { it.copy(parallelUploads = checked) }
+                }
+            )
+            if (options.parallelUploads) {
+                Text(
+                    text = "同时上传数量：${options.maxConcurrentUploads}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium
+                )
+                Slider(
+                    value = options.maxConcurrentUploads.toFloat(),
+                    onValueChange = { value ->
+                        val count = value.roundToInt().coerceIn(2, 5)
+                        if (count != options.maxConcurrentUploads) {
+                            onChange { it.copy(maxConcurrentUploads = count) }
+                        }
+                    },
+                    valueRange = 2f..5f,
+                    steps = 2
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "2 个",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = "5 个",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            UploadSwitchRow(
+                title = "显示详细上传信息",
+                description = "显示百分比、速度、剩余时间以及已传/总大小。",
+                checked = options.showDetailedProgress,
+                onCheckedChange = { checked ->
+                    onChange { it.copy(showDetailedProgress = checked) }
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun UploadSwitchRow(
+    title: String,
+    description: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.Medium
+            )
+            Text(
+                text = description,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange
         )
     }
 }
